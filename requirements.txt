@@ -1,4 +1,3 @@
-# TERMINATOR GENESIS GOLD - Dependencies
 ccxt
 pandas
 pandas-ta
