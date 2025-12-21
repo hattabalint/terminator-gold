@@ -89,7 +89,7 @@ def home():
 
 
 def run_flask():
-    app.run(host='0.0.0.0', port=8081)  # Different port for Gold
+    app.run(host='0.0.0.0', port=8000)  # Koyeb default port
 
 
 def keep_alive():
@@ -846,7 +846,8 @@ class TerminatorEngine:
 
     def get_trading_session(self) -> str:
         """Determine current trading session - GOLD OPTIMIZED"""
-        hour = datetime.utcnow().hour
+        from datetime import timezone
+        hour = datetime.now(timezone.utc).hour
         # Gold sessions (Forex hours)
         if 8 <= hour < 16:
             return "london"  # Most active for Gold
