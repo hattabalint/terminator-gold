@@ -683,6 +683,11 @@ class TelegramNotifier:
             else:
                 risk_usd = 0.0
 
+            # Get RR ratio and TP3 price
+            rr_ratio = signal_data.get('rr_ratio', 8)
+            tp3_value = signal_data.get('tp3', 'N/A')
+            tp3_display = f"${tp3_value:.2f}" if isinstance(tp3_value, (int, float)) else tp3_value
+            
             # --- ÜZENET ÖSSZEÁLLÍTÁSA (GOLD BRANDING) ---
             message = f"""
 🥇 **TERMINATOR GOLD SIGNAL** 🥇
@@ -691,6 +696,7 @@ class TelegramNotifier:
 🎯 **Direction / Irány:** {emoji} **{direction}** {emoji}
 💪 **Strength / Erősség:** **{score}/100** {prob_text}
 ⚡ **Mode / Mód:** {risk_mode_text}
+📊 **Risk:Reward:** **1:{rr_ratio}** (Max TP3-ig)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 🤖 **STRATEGY ANALYSIS / STRATÉGIA ELEMZÉS:**
@@ -706,8 +712,9 @@ class TelegramNotifier:
 💰 **TRADE LEVELS / SZINTEK:**
 • Entry / Belépő: **${entry:.2f}**
 • Stop Loss / Stoploss: **${sl:.2f}**
-• Target 1 (TP1): **${signal_data['tp1']:.2f}**
-• Target 2 (TP2): **${signal_data['tp2']:.2f}**
+• Target 1 (TP1): **${signal_data['tp1']:.2f}** *(1:3 RR)*
+• Target 2 (TP2): **${signal_data['tp2']:.2f}** *(1:5 RR)*
+• Target 3 (TP3): **{tp3_display}** *(1:8 RR)*
 
 📈 **RISK MANAGEMENT / KOCKÁZAT:**
 • Account Risk / Kockázat: **{risk_pct}%**
@@ -1001,6 +1008,7 @@ class TerminatorEngine:
                 'tp2': tp2,
                 'tp3': tp3,
                 'atr': atr,
+                'rr_ratio': 8,  # Max RR for TP3
                 'entropy': market_entropy,
                 'hmm_bull_prob': hmm_probs['BULL'] * 100,
                 'ai_confidence': ai_confidence,
@@ -1078,7 +1086,8 @@ class TerminatorEngine:
                     'stop_loss': signal['stop_loss'],
                     'tp1': signal['tp1'],
                     'tp2': signal['tp2'],
-                    'tp3': "Trailing ATR",
+                    'tp3': signal['tp3'],  # Show actual TP3 price
+                    'rr_ratio': signal.get('rr_ratio', 8),  # RR ratio
                     'entropy': f"{signal['entropy']:.2f}",
                     'hmm_bull_prob': f"{signal['hmm_bull_prob']:.1f}",
                     'ai_confidence': f"{signal['ai_confidence']:.0f}",
@@ -1247,19 +1256,43 @@ class TerminatorEngine:
                         )
                         self.current_position['hit_levels'].append('tp3')
 
-            # Stalling detection
+            # Stalling detection - SMART VERSION
             time_in_trade = (datetime.now() -
                              self.current_position['entry_time']).seconds / 60
-            if time_in_trade > 240:  # 4 hours
+            
+            # Calculate current profit
+            if is_long:
+                current_pnl_pct = (current_price - entry) / entry
+            else:
+                current_pnl_pct = (entry - current_price) / entry
+            
+            # Check if we hit any TP levels (profitable trade)
+            hit_tp1 = 'tp1' in self.current_position.get('hit_levels', [])
+            hit_tp2 = 'tp2' in self.current_position.get('hit_levels', [])
+            
+            # SMART STALLING: Don't close profitable high-RR trades!
+            # If TP1 hit (3:1 RR) - extend to 8 hours
+            # If TP2 hit (5:1 RR) - extend to 12 hours, let it run for TP3
+            if hit_tp2:
+                stall_timeout = 720  # 12 hours for TP2+ trades
+            elif hit_tp1:
+                stall_timeout = 480  # 8 hours for TP1+ trades  
+            else:
+                stall_timeout = 240  # 4 hours for trades that haven't hit any TP
+            
+            if time_in_trade > stall_timeout:
                 signal = await self.analyze_market()
-                if signal is None or signal['score'] < 40:
+                # Only close if market turned against us AND we're not in profit
+                if (signal is None or signal['score'] < 40) and current_pnl_pct <= 0:
                     logger.info("⏳ STALLING - A piac nem mozdul, zárok.")
                     await self.telegram.send_alert(
                         f"⏳ **IDŐTÚLLÉPÉS (STALLING)**\n"
-                        f"😴 A piac 4 órája nem indult el a várt irányba.\n"
+                        f"😴 A piac {stall_timeout//60} órája nem indult el a várt irányba.\n"
                         f"📉 A tőke felszabadítása érdekében zárom a pozíciót.\n"
                         f"Nem kockáztatunk oldalazó piacon.")
                     await self.close_position("STALLING_DETECTED")
+                elif current_pnl_pct > 0:
+                    logger.info(f"⏳ Timeout reached but trade is profitable (+{current_pnl_pct*100:.2f}%), letting it run...")
 
         except Exception as e:
             logger.error(f"Position monitoring error: {e}")
