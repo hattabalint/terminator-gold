@@ -96,7 +96,7 @@ def keep_alive():
     t = Thread(target=run_flask)
     t.daemon = True
     t.start()
-    logger.info("🌐 Flask Keep-Alive Server Started on Port 8081 (GOLD)")
+    logger.info("🌐 Flask Keep-Alive Server Started on Port 8000 (GOLD)")
 
 
 # ==================== HIDDEN MARKOV MODEL (ORACLE BRAIN) ====================
