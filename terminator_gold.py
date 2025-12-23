@@ -55,9 +55,12 @@ class Config:
     MIN_ACTIVE_ENGINES = 1  # Minimum engines that must be active for trade (was 2, but signals work with 1)
 
     # FLEXIBLE RR TIER CONFIGURATION
+    # SCALP: 55-59 score -> 1:3-1:5 RR (quick trades)
+    # STANDARD: 60-79 score -> 1:5-1:8 RR (regular trades)  
+    # SWING: 80+ score -> 1:8-1:10 RR (high confidence)
     RR_TIERS = {
-        "SCALP": {"min_score": 55, "max_score": 69, "sl_mult": 1.2, "tp1_mult": 3.6, "tp2_mult": 6.0, "tp3_mult": None, "max_rr": 5},
-        "STANDARD": {"min_score": 70, "max_score": 79, "sl_mult": 1.5, "tp1_mult": 4.5, "tp2_mult": 7.5, "tp3_mult": 12.0, "max_rr": 8},
+        "SCALP": {"min_score": 55, "max_score": 59, "sl_mult": 1.2, "tp1_mult": 3.6, "tp2_mult": 6.0, "tp3_mult": None, "max_rr": 5},
+        "STANDARD": {"min_score": 60, "max_score": 79, "sl_mult": 1.5, "tp1_mult": 4.5, "tp2_mult": 7.5, "tp3_mult": 12.0, "max_rr": 8},
         "SWING": {"min_score": 80, "max_score": 100, "sl_mult": 1.5, "tp1_mult": 4.5, "tp2_mult": 7.5, "tp3_mult": 15.0, "max_rr": 10}
     }
 
@@ -902,10 +905,10 @@ class TerminatorEngine:
         - ADX: Higher ADX = stronger trend = extend targets
         - Session: London/NY sessions favor swing trades (Gold)
         """
-        # Base tier from score
+        # Base tier from score (SCALP: 55-59, STANDARD: 60-79, SWING: 80+)
         if score >= 80:
             base_tier = "SWING"
-        elif score >= 70:
+        elif score >= 60:
             base_tier = "STANDARD"
         else:
             base_tier = "SCALP"
@@ -1487,10 +1490,11 @@ class TerminatorEngine:
                     )
                     self.current_position['hit_levels'].append('tp2')
 
-            # --- TP3 HIT ---
-            if 'tp3' in self.current_position:
-                tp3_hit = (is_long and current_price >= self.current_position['tp3']) or \
-                          (not is_long and current_price <= self.current_position['tp3'])
+            # --- TP3 HIT --- (only check if TP3 exists and is not None)
+            tp3_value = self.current_position.get('tp3')
+            if tp3_value is not None:
+                tp3_hit = (is_long and current_price >= tp3_value) or \
+                          (not is_long and current_price <= tp3_value)
 
                 if tp3_hit:
                     if 'tp3' not in self.current_position['hit_levels']:
