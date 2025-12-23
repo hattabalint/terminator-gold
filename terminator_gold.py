@@ -52,7 +52,7 @@ class Config:
     FLASH_CRASH_THRESHOLD = 0.005  # 0.5% drop in 1 second (Gold is less volatile)
     ENTROPY_THRESHOLD = 0.25  # Lower chaos threshold for Gold
     ADX_THRESHOLD = 20  # Lower trend strength minimum (Gold trends smoother)
-    MIN_ACTIVE_ENGINES = 2  # Minimum engines that must be active for trade
+    MIN_ACTIVE_ENGINES = 1  # Minimum engines that must be active for trade (was 2, but signals work with 1)
 
     # FLEXIBLE RR TIER CONFIGURATION
     RR_TIERS = {
