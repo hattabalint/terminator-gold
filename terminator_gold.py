@@ -46,12 +46,20 @@ class Config:
     TIMEFRAMES = {"fast": "15m", "medium": "1h", "slow": "4h"}
 
     # THRESHOLDS (GOLD-SPECIFIC - lower volatility asset)
-    MIN_SCORE = 60  # Minimum score to enter trade
+    MIN_SCORE = 55  # Lowered to allow more flexible RR trades
     TERMINATOR_SCORE = 80  # Ultra-high confidence threshold
     HMM_BEAR_THRESHOLD = 0.80  # 80% probability to cancel longs
     FLASH_CRASH_THRESHOLD = 0.005  # 0.5% drop in 1 second (Gold is less volatile)
     ENTROPY_THRESHOLD = 0.25  # Lower chaos threshold for Gold
     ADX_THRESHOLD = 20  # Lower trend strength minimum (Gold trends smoother)
+    MIN_ACTIVE_ENGINES = 2  # Minimum engines that must be active for trade
+
+    # FLEXIBLE RR TIER CONFIGURATION
+    RR_TIERS = {
+        "SCALP": {"min_score": 55, "max_score": 69, "sl_mult": 1.2, "tp1_mult": 3.6, "tp2_mult": 6.0, "tp3_mult": None, "max_rr": 5},
+        "STANDARD": {"min_score": 70, "max_score": 79, "sl_mult": 1.5, "tp1_mult": 4.5, "tp2_mult": 7.5, "tp3_mult": 12.0, "max_rr": 8},
+        "SWING": {"min_score": 80, "max_score": 100, "sl_mult": 1.5, "tp1_mult": 4.5, "tp2_mult": 7.5, "tp3_mult": 15.0, "max_rr": 10}
+    }
 
     # PATTERN RECOGNITION
     PATTERN_HISTORY_CANDLES = 30
@@ -685,11 +693,25 @@ class TelegramNotifier:
 
             # Get RR ratio and TP3 price
             rr_ratio = signal_data.get('rr_ratio', 8)
-            tp3_value = signal_data.get('tp3', 'N/A')
-            tp3_display = f"${tp3_value:.2f}" if isinstance(tp3_value, (int, float)) else tp3_value
+            rr_tier = signal_data.get('rr_tier', 'STANDARD')
+            tp3_value = signal_data.get('tp3')
+            
+            # Handle TP3 display for different tiers
+            if tp3_value is None:
+                tp3_display = "N/A (SCALP)"
+                tp3_rr_text = "N/A"
+            else:
+                tp3_display = f"${tp3_value:.2f}"
+                if rr_tier == 'SWING':
+                    tp3_rr_text = "1:10 RR"
+                elif rr_tier == 'STANDARD':
+                    tp3_rr_text = "1:8 RR"
+                else:
+                    tp3_rr_text = "1:5 RR"
             
             # Get trade type
             trade_type = signal_data.get('trade_type', 'TRADE')
+            active_engines = signal_data.get('active_engines', 'N/A')
             
             # --- ÜZENET ÖSSZEÁLLÍTÁSA (GOLD BRANDING) ---
             message = f"""
@@ -698,9 +720,10 @@ class TelegramNotifier:
 📍 **Symbol / Pár:** {signal_data['symbol']}
 🎯 **Direction / Irány:** {emoji} **{direction}** {emoji}
 🏷️ **Trade típus:** **{trade_type}**
+📊 **RR Tier:** **{rr_tier}** (Max 1:{rr_ratio})
 💪 **Strength / Erősség:** **{score}/100** {prob_text}
 ⚡ **Mode / Mód:** {risk_mode_text}
-📊 **Risk:Reward:** **1:{rr_ratio}** (Max TP3-ig)
+🤖 **Active Engines:** **{active_engines}/3**
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 🤖 **STRATEGY ANALYSIS / STRATÉGIA ELEMZÉS:**
@@ -718,13 +741,13 @@ class TelegramNotifier:
 • Stop Loss / Stoploss: **${sl:.2f}**
 • Target 1 (TP1): **${signal_data['tp1']:.2f}** *(1:3 RR)*
 • Target 2 (TP2): **${signal_data['tp2']:.2f}** *(1:5 RR)*
-• Target 3 (TP3): **{tp3_display}** *(1:8 RR)*
+• Target 3 (TP3): **{tp3_display}** *({tp3_rr_text})*
 
 📈 **RISK MANAGEMENT / KOCKÁZAT:**
 • Account Risk / Kockázat: **{risk_pct}%**
 • Position Size / Pozíció: ${pos_size:.2f} USD
 ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬
-🥇 *GOLD Edition - Spot CFD* 🥇
+🥇 *GOLD Edition - Flexible RR* 🥇
 """
             await self.bot.send_message(chat_id=self.chat_id,
                                         text=message,
@@ -868,8 +891,70 @@ class TerminatorEngine:
             return "asian"
         return "other"
 
+    def determine_rr_tier(self, score: int, entropy: float, adx: float, session: str) -> str:
+        """Determine optimal RR tier based on market conditions.
+        
+        Returns: 'SCALP', 'STANDARD', or 'SWING'
+        
+        Factors considered:
+        - Score: Higher score = more aggressive targets
+        - Entropy: Lower entropy (less chaos) = better for swing trades
+        - ADX: Higher ADX = stronger trend = extend targets
+        - Session: London/NY sessions favor swing trades (Gold)
+        """
+        # Base tier from score
+        if score >= 80:
+            base_tier = "SWING"
+        elif score >= 70:
+            base_tier = "STANDARD"
+        else:
+            base_tier = "SCALP"
+        
+        # Upgrade/downgrade based on conditions
+        upgrade_points = 0
+        
+        # Low entropy is good for extending targets
+        if entropy < 0.15:
+            upgrade_points += 2
+        elif entropy < 0.25:
+            upgrade_points += 1
+        elif entropy > 0.35:
+            upgrade_points -= 1
+        
+        # Strong trend (high ADX) favors higher RR
+        if adx > 30:
+            upgrade_points += 2
+        elif adx > 25:
+            upgrade_points += 1
+        elif adx < 18:
+            upgrade_points -= 1
+        
+        # London session is best for Gold swings
+        if session == "london":
+            upgrade_points += 1
+        elif session == "newyork":
+            upgrade_points += 0.5
+        elif session == "asian":
+            upgrade_points -= 1
+        
+        # Determine final tier
+        tier_levels = ["SCALP", "STANDARD", "SWING"]
+        current_idx = tier_levels.index(base_tier)
+        
+        # Upgrade/downgrade based on points (need 2+ points to change tier)
+        if upgrade_points >= 2 and current_idx < 2:
+            final_tier = tier_levels[current_idx + 1]
+        elif upgrade_points <= -2 and current_idx > 0:
+            final_tier = tier_levels[current_idx - 1]
+        else:
+            final_tier = base_tier
+        
+        logger.info(f"📊 RR Tier: {final_tier} (base: {base_tier}, points: {upgrade_points:.1f})")
+        return final_tier
+
+
     async def fetch_gold_data_yfinance(self, timeframe: str, limit: int = 500) -> pd.DataFrame:
-        """Fallback: Fetch Gold data from yfinance"""
+        """Fallback: Fetch Gold data from yfinance - SPOT GOLD"""
         try:
             loop = asyncio.get_event_loop()
             
@@ -882,13 +967,28 @@ class TerminatorEngine:
             
             period, interval = tf_map.get(timeframe, ("30d", "1h"))
             
-            data = await loop.run_in_executor(
-                None, lambda: yf.download("XAUUSD=X",  # Spot Gold CFD
-                                          period=period,
-                                          interval=interval,
-                                          progress=False,
-                                          auto_adjust=True,
-                                          multi_level_index=False))
+            # Try multiple gold tickers for SPOT gold price (not futures)
+            gold_tickers = [
+                "XAUUSD=X",    # Forex spot gold vs USD
+                "GC=F",        # Gold futures (backup)
+            ]
+            
+            data = pd.DataFrame()
+            for ticker in gold_tickers:
+                try:
+                    data = await loop.run_in_executor(
+                        None, lambda t=ticker: yf.download(t,
+                                              period=period,
+                                              interval=interval,
+                                              progress=False,
+                                              auto_adjust=True,
+                                              multi_level_index=False))
+                    if not data.empty:
+                        logger.info(f"✅ Gold data fetched from ticker: {ticker}")
+                        break
+                except Exception as e:
+                    logger.warning(f"Ticker {ticker} failed: {e}")
+                    continue
             
             if data.empty:
                 return pd.DataFrame()
@@ -967,6 +1067,17 @@ class TerminatorEngine:
             total_score = engine_a['score'] + engine_b['score'] + engine_c[
                 'score']
 
+            # Check minimum active engines
+            active_engines = sum([
+                1 if engine_a['active'] else 0,
+                1 if engine_b['active'] else 0,
+                1 if engine_c['active'] else 0
+            ])
+            
+            if active_engines < self.config.MIN_ACTIVE_ENGINES:
+                logger.info(f"⚠️ Only {active_engines} engines active (need {self.config.MIN_ACTIVE_ENGINES}) - skipping")
+                return None
+
             # Pattern Recognition AI
             recent_prices = dfs['medium']['close'].tail(
                 self.config.PATTERN_HISTORY_CANDLES).values
@@ -989,28 +1100,35 @@ class TerminatorEngine:
             # Determine direction (simplified - prefer long in this version)
             direction = "LONG"
 
-            # Calculate entry levels with improved Risk-Reward ratios
-            # GOLD-SPECIFIC: Use slightly tighter ATR multipliers
+            # Calculate entry levels with FLEXIBLE Risk-Reward ratios
             atr = dfs['fast']['ATRr_14'].iloc[-1]
             entry_price = current_price
-            
-            # Determine trade type: SCALP vs SWING
-            # SWING: Higher score (80+), lower entropy, stronger trend (ADX > 25)
-            # SCALP: Lower score (60-79), higher entropy, weaker trend
             adx_value = dfs['fast']['ADX_14'].iloc[-1] if 'ADX_14' in dfs['fast'].columns else 20
             
-            if total_score >= 80 and market_entropy < 0.2 and adx_value > 25:
-                trade_type = "SWING TRADE 🏹"
-            elif total_score >= 70 and adx_value > 22:
-                trade_type = "SWING TRADE 🏹"
-            else:
-                trade_type = "SCALP TRADE ⚡"
+            # Determine optimal RR tier based on market conditions
+            rr_tier = self.determine_rr_tier(total_score, market_entropy, adx_value, session)
+            tier_config = self.config.RR_TIERS[rr_tier]
             
-            # GOLD RR: Risk = 1.5*ATR, TP1 = 3:1, TP2 = 5:1, TP3 = 8:1
-            stop_loss = entry_price - (atr * 1.5)  # 1.5 ATR risk
-            tp1 = entry_price + (atr * 4.5)        # 3:1 RR
-            tp2 = entry_price + (atr * 7.5)        # 5:1 RR
-            tp3 = entry_price + (atr * 12)         # 8:1 RR
+            # Calculate TP levels based on tier
+            stop_loss = entry_price - (atr * tier_config['sl_mult'])
+            tp1 = entry_price + (atr * tier_config['tp1_mult'])
+            tp2 = entry_price + (atr * tier_config['tp2_mult'])
+            
+            # TP3 only for STANDARD and SWING tiers
+            if tier_config['tp3_mult']:
+                tp3 = entry_price + (atr * tier_config['tp3_mult'])
+            else:
+                tp3 = None  # No TP3 for SCALP trades
+            
+            max_rr = tier_config['max_rr']
+            
+            # Determine trade type display
+            if rr_tier == "SWING":
+                trade_type = "🏹 SWING TRADE (1:10 RR)"
+            elif rr_tier == "STANDARD":
+                trade_type = "📊 STANDARD TRADE (1:8 RR)"
+            else:
+                trade_type = "⚡ SCALP TRADE (1:5 RR)"
 
             # Compile signal
             signal = {
@@ -1024,9 +1142,11 @@ class TerminatorEngine:
                 'tp2': tp2,
                 'tp3': tp3,
                 'atr': atr,
-                'rr_ratio': 8,  # Max RR for TP3
-                'trade_type': trade_type,  # SCALP or SWING
+                'rr_ratio': max_rr,
+                'rr_tier': rr_tier,
+                'trade_type': trade_type,
                 'entropy': market_entropy,
+                'adx': adx_value,
                 'hmm_bull_prob': hmm_probs['BULL'] * 100,
                 'ai_confidence': ai_confidence,
                 'pattern_matches': pattern_matches,
@@ -1035,6 +1155,7 @@ class TerminatorEngine:
                     'whale': engine_b,
                     'contrarian': engine_c
                 },
+                'active_engines': active_engines,
                 'external_data': external_data,
                 'funding_rate': funding_rate,
                 'obi': obi
@@ -1075,6 +1196,7 @@ class TerminatorEngine:
                     'tp2': signal['tp2'],
                     'tp3': signal['tp3'],
                     'score': signal['score'],
+                    'rr_tier': signal.get('rr_tier', 'STANDARD'),  # Track RR tier for upgrade logic
                     'trade_type': signal.get('trade_type', 'TRADE'),
                     'entry_time': datetime.now(),
                     'breakeven_sl': signal['stop_loss'],
@@ -1245,6 +1367,36 @@ class TerminatorEngine:
                         f"{direction_emoji} Direction / Irány: {self.current_position['side'].upper()}"
                     )
                     self.current_position['hit_levels'].append('tp1')
+                    
+                    # --- DYNAMIC TP UPGRADE LOGIC ---
+                    # ONLY upgrade if current trade is NOT already SWING tier AND new conditions warrant upgrade
+                    current_rr_tier = self.current_position.get('rr_tier', 'SCALP')
+                    
+                    # Only try to upgrade if we're not already at max tier
+                    if current_rr_tier != 'SWING':
+                        try:
+                            upgrade_signal = await self.analyze_market()
+                            if upgrade_signal and upgrade_signal.get('rr_tier') == 'SWING':
+                                # Market conditions upgraded to SWING tier - this is a real improvement!
+                                new_atr = upgrade_signal['atr']
+                                old_tp3 = self.current_position.get('tp3')
+                                new_tp3 = current_price + (new_atr * 10)  # Extend to 1:10 from current
+                                
+                                if old_tp3 is None or (new_tp3 and new_tp3 > old_tp3):
+                                    self.current_position['tp3'] = new_tp3
+                                    self.current_position['rr_tier'] = 'SWING'
+                                    
+                                    old_display = f"${old_tp3:.2f}" if old_tp3 else "N/A (was SCALP)"
+                                    await self.telegram.send_alert(
+                                        f"📈 **TP3 UPGRADED** 🚀\n"
+                                        f"🔥 Market improved from {current_rr_tier} → SWING!\n"
+                                        f"📊 Old TP3: {old_display}\n"
+                                        f"🎯 New TP3: **${new_tp3:.2f}** (1:10 RR)\n"
+                                        f"💎 Letting profits run!"
+                                    )
+                                    logger.info(f"📈 TP3 upgraded: {current_rr_tier} -> SWING, TP3 = ${new_tp3:.2f}")
+                        except Exception as e:
+                            logger.warning(f"TP upgrade check failed: {e}")
 
             # --- TP2 HIT ---
             tp2_hit = (is_long and current_price >= self.current_position['tp2']) or \
