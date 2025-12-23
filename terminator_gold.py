@@ -952,76 +952,74 @@ class TerminatorEngine:
         logger.info(f"📊 RR Tier: {final_tier} (base: {base_tier}, points: {upgrade_points:.1f})")
         return final_tier
 
-
     async def fetch_spot_gold_price(self) -> Optional[float]:
-        """Fetch real-time SPOT XAU/USD price from multiple free sources.
+        """Fetch real-time SPOT XAU/USD price.
         
-        This is critical - yfinance tickers give futures prices, not spot!
-        We need the real forex spot price.
-        """
-        import aiohttp
+        IMPORTANT: yfinance GC=F returns FUTURES price (higher than spot).
+        GLD ETF tracks SPOT gold price, so we use that with conversion.
         
-        # Method 1: Try free Forex API (metals-api alternative)
-        try:
-            async with aiohttp.ClientSession() as session:
-                # Free gold price API from goldpricez.com (no API key needed for basic)
-                url = "https://data-asg.goldprice.org/dbXRates/USD"
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        if 'items' in data and len(data['items']) > 0:
-                            # xauPrice is spot gold price per oz
-                            spot_price = data['items'][0].get('xauPrice')
-                            if spot_price:
-                                logger.info(f"✅ Spot Gold price from goldprice.org: ${spot_price:.2f}")
-                                return float(spot_price)
-        except Exception as e:
-            logger.warning(f"goldprice.org API failed: {e}")
-        
-        # Method 2: Try Yahoo Finance spot ticker (as fallback)
-        try:
-            loop = asyncio.get_event_loop()
-            import yfinance as yf
-            ticker = yf.Ticker("XAUUSD=X")
-            data = await loop.run_in_executor(None, lambda: ticker.history(period="1d"))
-            if not data.empty:
-                price = float(data['Close'].iloc[-1])
-                # Sanity check: spot gold should be in $2000-$3500 range currently
-                if 1500 < price < 4000:
-                    logger.info(f"✅ Spot Gold price from yfinance: ${price:.2f}")
-                    return price
-                else:
-                    logger.warning(f"yfinance price ${price:.2f} seems wrong for spot gold")
-        except Exception as e:
-            logger.warning(f"yfinance spot price failed: {e}")
-        
-        # Method 3: Calculate from GLD ETF (each share ≈ 1/10 oz gold)
-        try:
-            loop = asyncio.get_event_loop()
-            import yfinance as yf
-            gld = await loop.run_in_executor(
-                None, lambda: yf.download("GLD", period="1d", progress=False))
-            if not gld.empty:
-                gld_price = float(gld['Close'].iloc[-1])
-                # GLD is approximately 1/10 of gold oz price
-                estimated_gold = gld_price * 10.5  # Approximate conversion factor
-                logger.info(f"✅ Estimated Spot Gold from GLD ETF: ${estimated_gold:.2f}")
-                return estimated_gold
-        except Exception as e:
-            logger.warning(f"GLD ETF fallback failed: {e}")
-        
-        return None
-
-    async def fetch_gold_data_yfinance(self, timeframe: str, limit: int = 500) -> pd.DataFrame:
-        """Fetch Gold OHLCV data with CORRECT spot prices.
-        
-        Note: yfinance gold tickers often return futures prices.
-        We adjust the data to match real spot prices.
+        GLD ETF = 1/10 oz of gold, so: Spot Gold ≈ GLD price × 10.5
         """
         try:
             loop = asyncio.get_event_loop()
             
-            # Map timeframes to yfinance intervals
+            # PRIMARY: Use GLD ETF (tracks SPOT gold, not futures!)
+            gld = await loop.run_in_executor(
+                None, lambda: yf.download("GLD", period="1d", progress=False, auto_adjust=True))
+            
+            if not gld.empty:
+                # Handle multi-level columns from yfinance
+                if hasattr(gld['Close'], 'iloc'):
+                    gld_price = float(gld['Close'].iloc[-1])
+                    if hasattr(gld_price, 'item'):
+                        gld_price = gld_price.item()
+                else:
+                    gld_price = float(gld['Close'].values[-1])
+                
+                # GLD ETF represents approximately 1/10 oz of gold
+                # Conversion factor is approximately 10.4-10.5
+                spot_gold = gld_price * 10.4
+                logger.info(f"✅ Spot Gold (from GLD ETF ${gld_price:.2f} × 10.4): ${spot_gold:.2f}")
+                return spot_gold
+                
+        except Exception as e:
+            logger.warning(f"GLD ETF price fetch failed: {e}")
+        
+        # FALLBACK: Use futures price with discount (futures typically 5-7% higher)
+        try:
+            loop = asyncio.get_event_loop()
+            gc = await loop.run_in_executor(
+                None, lambda: yf.download("GC=F", period="1d", progress=False, auto_adjust=True))
+            
+            if not gc.empty:
+                if hasattr(gc['Close'], 'iloc'):
+                    futures_price = float(gc['Close'].iloc[-1])
+                    if hasattr(futures_price, 'item'):
+                        futures_price = futures_price.item()
+                else:
+                    futures_price = float(gc['Close'].values[-1])
+                
+                # Apply 5% discount to approximate spot price
+                spot_estimate = futures_price * 0.95
+                logger.warning(f"⚠️ Using estimated spot (futures ${futures_price:.2f} × 0.95): ${spot_estimate:.2f}")
+                return spot_estimate
+                
+        except Exception as e:
+            logger.error(f"All spot price sources failed: {e}")
+        
+        return None
+
+    async def fetch_gold_data_yfinance(self, timeframe: str, limit: int = 500) -> pd.DataFrame:
+        """Fetch Gold OHLCV data with CORRECTED spot prices.
+        
+        Strategy:
+        1. Fetch futures data (GC=F) for OHLCV history (more reliable data)
+        2. Get real spot price from GLD ETF
+        3. Apply adjustment ratio to convert all prices to spot equivalent
+        """
+        try:
+            loop = asyncio.get_event_loop()
+            
             tf_map = {
                 "15m": ("5d", "15m"),
                 "1h": ("30d", "1h"),
@@ -1030,9 +1028,9 @@ class TerminatorEngine:
             
             period, interval = tf_map.get(timeframe, ("30d", "1h"))
             
-            # Fetch data from yfinance (may be futures prices)
+            # Fetch GC=F (futures) for OHLCV data (most reliable source for historical data)
             data = await loop.run_in_executor(
-                None, lambda: yf.download("XAUUSD=X",
+                None, lambda: yf.download("GC=F",
                                           period=period,
                                           interval=interval,
                                           progress=False,
@@ -1040,38 +1038,31 @@ class TerminatorEngine:
                                           multi_level_index=False))
             
             if data.empty:
-                # Fallback to GC=F (futures) and adjust
-                data = await loop.run_in_executor(
-                    None, lambda: yf.download("GC=F",
-                                              period=period,
-                                              interval=interval,
-                                              progress=False,
-                                              auto_adjust=True,
-                                              multi_level_index=False))
-            
-            if data.empty:
+                logger.error("No gold data available from yfinance")
                 return pd.DataFrame()
             
             df = data.reset_index()
             df.columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
             
-            # Get real spot price and calculate adjustment ratio
+            # Get real SPOT price and calculate adjustment ratio
             real_spot = await self.fetch_spot_gold_price()
             if real_spot and len(df) > 0:
-                yf_current = float(df['close'].iloc[-1])
+                futures_current = float(df['close'].iloc[-1])
                 
-                # If yfinance price differs by more than 2% from spot, adjust all prices
-                if abs(yf_current - real_spot) / real_spot > 0.02:
-                    adjustment_ratio = real_spot / yf_current
-                    logger.info(f"📊 Adjusting prices: yf={yf_current:.2f} -> spot={real_spot:.2f} (ratio={adjustment_ratio:.4f})")
-                    
-                    for col in ['open', 'high', 'low', 'close']:
-                        df[col] = df[col] * adjustment_ratio
+                # Calculate adjustment ratio (spot is typically lower than futures)
+                adjustment_ratio = real_spot / futures_current
+                logger.info(f"📊 Adjusting: futures=${futures_current:.2f} → spot=${real_spot:.2f} (ratio={adjustment_ratio:.4f})")
+                
+                # Apply adjustment to all OHLCV prices
+                for col in ['open', 'high', 'low', 'close']:
+                    df[col] = df[col] * adjustment_ratio
             
             df = df.tail(limit)
-            logger.info(f"✅ Gold data ready - latest price: ${df['close'].iloc[-1]:.2f}")
+            final_price = float(df['close'].iloc[-1])
+            logger.info(f"✅ Gold data ready - SPOT price: ${final_price:.2f}")
             
             return df
+            
         except Exception as e:
             logger.error(f"Error fetching Gold data: {e}")
             return pd.DataFrame()
