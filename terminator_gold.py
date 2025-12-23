@@ -953,59 +953,62 @@ class TerminatorEngine:
         return final_tier
 
     async def fetch_spot_gold_price(self) -> Optional[float]:
-        """Fetch real-time SPOT XAU/USD price.
+        """Fetch REAL spot XAU/USD price from Swissquote Forex API.
         
-        IMPORTANT: yfinance GC=F returns FUTURES price (higher than spot).
-        GLD ETF tracks SPOT gold price, so we use that with conversion.
-        
-        GLD ETF = 1/10 oz of gold, so: Spot Gold ≈ GLD price × 10.5
+        THIS IS THE CORRECT SOURCE - returns actual forex spot price (~$4480)
+        NOT yfinance futures garbage (~$4514)
         """
-        try:
-            loop = asyncio.get_event_loop()
-            
-            # PRIMARY: Use GLD ETF (tracks SPOT gold, not futures!)
-            gld = await loop.run_in_executor(
-                None, lambda: yf.download("GLD", period="1d", progress=False, auto_adjust=True))
-            
-            if not gld.empty:
-                # Handle multi-level columns from yfinance
-                if hasattr(gld['Close'], 'iloc'):
-                    gld_price = float(gld['Close'].iloc[-1])
-                    if hasattr(gld_price, 'item'):
-                        gld_price = gld_price.item()
-                else:
-                    gld_price = float(gld['Close'].values[-1])
-                
-                # GLD ETF represents approximately 1/10 oz of gold
-                # Conversion factor is approximately 10.4-10.5
-                spot_gold = gld_price * 10.4
-                logger.info(f"✅ Spot Gold (from GLD ETF ${gld_price:.2f} × 10.4): ${spot_gold:.2f}")
-                return spot_gold
-                
-        except Exception as e:
-            logger.warning(f"GLD ETF price fetch failed: {e}")
+        import aiohttp
         
-        # FALLBACK: Use futures price with discount (futures typically 5-7% higher)
+        try:
+            async with aiohttp.ClientSession() as session:
+                # Swissquote Forex API - FREE, no API key, returns REAL spot XAU/USD
+                url = "https://forex-data-feed.swissquote.com/public-quotes/bboquotes/instrument/XAU/USD"
+                
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        
+                        if data and len(data) > 0:
+                            # Get bid price from first result (elite spread is tightest)
+                            spreads = data[0].get('spreadProfilePrices', [])
+                            for spread in spreads:
+                                if spread.get('spreadProfile') == 'elite':
+                                    bid = spread.get('bid')
+                                    ask = spread.get('ask')
+                                    if bid and ask:
+                                        mid_price = (bid + ask) / 2
+                                        logger.info(f"✅ SPOT XAU/USD from Swissquote: ${mid_price:.2f} (bid: ${bid:.2f}, ask: ${ask:.2f})")
+                                        return mid_price
+                            
+                            # Fallback to first available price
+                            if spreads:
+                                bid = spreads[0].get('bid')
+                                if bid:
+                                    logger.info(f"✅ SPOT XAU/USD from Swissquote: ${bid:.2f}")
+                                    return float(bid)
+                                    
+        except Exception as e:
+            logger.warning(f"Swissquote API failed: {e}")
+        
+        # LAST RESORT FALLBACK: Futures with 0.5% discount
         try:
             loop = asyncio.get_event_loop()
             gc = await loop.run_in_executor(
                 None, lambda: yf.download("GC=F", period="1d", progress=False, auto_adjust=True))
             
             if not gc.empty:
-                if hasattr(gc['Close'], 'iloc'):
-                    futures_price = float(gc['Close'].iloc[-1])
-                    if hasattr(futures_price, 'item'):
-                        futures_price = futures_price.item()
-                else:
-                    futures_price = float(gc['Close'].values[-1])
+                futures_price = float(gc['Close'].iloc[-1])
+                if hasattr(futures_price, 'item'):
+                    futures_price = futures_price.item()
                 
-                # Apply 5% discount to approximate spot price
-                spot_estimate = futures_price * 0.95
-                logger.warning(f"⚠️ Using estimated spot (futures ${futures_price:.2f} × 0.95): ${spot_estimate:.2f}")
+                # Small discount (futures typically slightly higher)
+                spot_estimate = futures_price * 0.995
+                logger.warning(f"⚠️ Fallback: futures ${futures_price:.2f} × 0.995 = ${spot_estimate:.2f}")
                 return spot_estimate
                 
         except Exception as e:
-            logger.error(f"All spot price sources failed: {e}")
+            logger.error(f"All price sources failed: {e}")
         
         return None
 
