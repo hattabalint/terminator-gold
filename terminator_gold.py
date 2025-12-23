@@ -1171,10 +1171,12 @@ class TerminatorEngine:
 
             # Flash crash check
             if self.market_data and self.market_data.detect_flash_crash(current_price):
-                logger.critical("🚨 FLASH CRASH ÉRZÉKELVE POZÍCIÓ KÖZBEN!")
+                logger.critical("🚨 FLASH CRASH DETECTED!")
                 await self.telegram.send_alert(
-                    f"🚨 **VÉSZFÉK AKTIVÁLVA** 🚨\n"
-                    f"📉 Hirtelen piaci összeomlást (Flash Crash) észleltem.\n"
+                    f"🚨 **EMERGENCY BRAKE ACTIVATED / VÉSZFÉK AKTIVÁLVA** 🚨\n"
+                    f"📉 Sudden market crash (Flash Crash) detected.\n"
+                    f"📉 Hirtelen piaci összeomlást észleltem.\n"
+                    f"🛡️ All positions CLOSED immediately to protect capital.\n"
                     f"🛡️ A tőke védelme érdekében AZONNAL ZÁRTAM mindent.")
                 await self.close_position("FLASH_CRASH_EMERGENCY")
                 return
@@ -1200,17 +1202,19 @@ class TerminatorEngine:
                     if is_breakeven:
                         await self.telegram.send_alert(
                             f"⛔ **STOP LOSS HIT** (${current_price:.2f})\n"
+                            f"🛡️ **At Breakeven level** (after TP1)\n"
                             f"🛡️ **Breakeven szinten** (TP1 után)\n"
-                            f"✅ Nyereség nélküli kijárulás - tőke megmentve!\n"
-                            f"{direction_emoji} Irány volt: {self.current_position['side'].upper()}"
+                            f"✅ No-loss exit - capital saved! / Nyereség nélküli kijárulás - tőke megmentve!\n"
+                            f"{direction_emoji} Direction / Irány: {self.current_position['side'].upper()}"
                         )
                     else:
                         loss_pct = abs(current_price - entry) / entry * 100
                         await self.telegram.send_alert(
                             f"⛔ **STOP LOSS HIT** (${current_price:.2f})\n"
-                            f"📉 Veszteség: **{loss_pct:.2f}%**\n"
-                            f"🛡️ Pozíció lezárva a kockázat korlátok miatt\n"
-                            f"{direction_emoji} Irány volt: {self.current_position['side'].upper()}"
+                            f"📉 Loss / Veszteség: **{loss_pct:.2f}%**\n"
+                            f"🛡️ Position closed due to risk limits.\n"
+                            f"🛡️ Pozíció lezárva a kockázat korlátok miatt.\n"
+                            f"{direction_emoji} Direction / Irány: {self.current_position['side'].upper()}"
                         )
                     
                     self.current_position['hit_levels'].append('sl_hit')
@@ -1232,12 +1236,13 @@ class TerminatorEngine:
 
                     direction_emoji = "📈" if is_long else "📉"
                     await self.telegram.send_alert(
-                        f"💰 **TP1 ELÉRVE** (${current_price:.2f})\n"
+                        f"💰 **TP1 REACHED / ELÉRVE** (${current_price:.2f})\n"
                         f"🏷️ {trade_type}\n"
-                        f"� Nyereség: **+{profit_pct:.2f}%** | **1:3 RR biztosítva!**\n"
-                        f"�🛡️ Stop Loss húzása **Breakeven szintre** (${self.current_position['entry_price']:.2f})\n"
-                        f"✅ Az első célár teljesült!\n"
-                        f"{direction_emoji} Irány: {self.current_position['side'].upper()}"
+                        f"📊 Profit / Nyereség: **+{profit_pct:.2f}%** | **1:3 RR locked / biztosítva!**\n"
+                        f"🛡️ SL moved to Breakeven (${self.current_position['entry_price']:.2f})\n"
+                        f"🛡️ SL húzása Breakeven szintre\n"
+                        f"✅ First target achieved! / Az első célár teljesült!\n"
+                        f"{direction_emoji} Direction / Irány: {self.current_position['side'].upper()}"
                     )
                     self.current_position['hit_levels'].append('tp1')
 
@@ -1253,11 +1258,12 @@ class TerminatorEngine:
                     direction_emoji = "📈" if is_long else "📉"
                     
                     await self.telegram.send_alert(
-                        f"🚀 **TP2 ELÉRVE** (${current_price:.2f})\n"
+                        f"🚀 **TP2 REACHED / ELÉRVE** (${current_price:.2f})\n"
                         f"🏷️ {trade_type}\n"
-                        f"💰 Nyereség: **+{profit_pct:.2f}%** | **1:5 RR elérve!**\n"
+                        f"💰 Profit / Nyereség: **+{profit_pct:.2f}%** | **1:5 RR achieved / elérve!**\n"
+                        f"📊 Excellent performance! Market moving in your favor.\n"
                         f"📊 Remek teljesítmény! A piac az irányodba szakad.\n"
-                        f"{direction_emoji} Irány: {self.current_position['side'].upper()}"
+                        f"{direction_emoji} Direction / Irány: {self.current_position['side'].upper()}"
                     )
                     self.current_position['hit_levels'].append('tp2')
 
@@ -1274,12 +1280,14 @@ class TerminatorEngine:
                         direction_emoji = "📈" if is_long else "📉"
                         
                         await self.telegram.send_alert(
-                            f"🌌 **TP3 ELÉRVE - MAXIMUM PROFIT** (${current_price:.2f})\n"
+                            f"🌌 **TP3 REACHED - MAXIMUM PROFIT / ELÉRVE - MAX NYERESÉG** (${current_price:.2f})\n"
                             f"🏷️ {trade_type}\n"
-                            f"💎 Szupernyereség: **+{profit_pct:.2f}%** | **1:8 RR MAXIMUM!**\n"
-                            f"🥇 GOLD RUSH! A végső cél elérve!\n"
+                            f"💎 Super profit / Szupernyereség: **+{profit_pct:.2f}%** | **1:8 RR MAXIMUM!**\n"
+                            f"🥇 GOLD RUSH! Final target achieved! / Végső cél elérve!\n"
+                            f"🥂 Only elite traders reach this level!\n"
                             f"🥂 Ezt az eredményt csak a legmagasabb szintű kereskedők érik el!\n"
-                            f"{direction_emoji} Irány volt: {self.current_position['side'].upper()}\n"
+                            f"{direction_emoji} Direction / Irány: {self.current_position['side'].upper()}\n"
+                            f"✅ Position CLOSED - Final profit target reached!\n"
                             f"✅ Pozíció LEZÁRVA - Végső profit target elérve!"
                         )
                         self.current_position['hit_levels'].append('tp3')
@@ -1316,12 +1324,14 @@ class TerminatorEngine:
                 signal = await self.analyze_market()
                 # Only close if market turned against us AND we're not in profit
                 if (signal is None or signal['score'] < 40) and current_pnl_pct <= 0:
-                    logger.info("⏳ STALLING - A piac nem mozdul, zárok.")
+                    logger.info("⏳ STALLING - Market not moving, closing position.")
                     await self.telegram.send_alert(
-                        f"⏳ **IDŐTÚLLÉPÉS (STALLING)**\n"
+                        f"⏳ **TIMEOUT / IDŐTÚLLÉPÉS (STALLING)**\n"
+                        f"😴 Market hasn't moved in expected direction for {stall_timeout//60} hours.\n"
                         f"😴 A piac {stall_timeout//60} órája nem indult el a várt irányba.\n"
+                        f"📉 Closing position to free up capital.\n"
                         f"📉 A tőke felszabadítása érdekében zárom a pozíciót.\n"
-                        f"Nem kockáztatunk oldalazó piacon.")
+                        f"No risk on sideways market. / Nem kockáztatunk oldalazó piacon.")
                     await self.close_position("STALLING_DETECTED")
                 elif current_pnl_pct > 0:
                     logger.info(f"⏳ Timeout reached but trade is profitable (+{current_pnl_pct*100:.2f}%), letting it run...")
