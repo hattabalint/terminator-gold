@@ -688,12 +688,16 @@ class TelegramNotifier:
             tp3_value = signal_data.get('tp3', 'N/A')
             tp3_display = f"${tp3_value:.2f}" if isinstance(tp3_value, (int, float)) else tp3_value
             
+            # Get trade type
+            trade_type = signal_data.get('trade_type', 'TRADE')
+            
             # --- ÜZENET ÖSSZEÁLLÍTÁSA (GOLD BRANDING) ---
             message = f"""
 🥇 **TERMINATOR GOLD SIGNAL** 🥇
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📍 **Symbol / Pár:** {signal_data['symbol']}
 🎯 **Direction / Irány:** {emoji} **{direction}** {emoji}
+🏷️ **Trade típus:** **{trade_type}**
 💪 **Strength / Erősség:** **{score}/100** {prob_text}
 ⚡ **Mode / Mód:** {risk_mode_text}
 📊 **Risk:Reward:** **1:{rr_ratio}** (Max TP3-ig)
@@ -720,7 +724,7 @@ class TelegramNotifier:
 • Account Risk / Kockázat: **{risk_pct}%**
 • Position Size / Pozíció: ${pos_size:.2f} USD
 ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬
-🥇 *GOLD Edition - DXY Optimized* 🥇
+🥇 *GOLD Edition - Spot CFD* 🥇
 """
             await self.bot.send_message(chat_id=self.chat_id,
                                         text=message,
@@ -879,7 +883,7 @@ class TerminatorEngine:
             period, interval = tf_map.get(timeframe, ("30d", "1h"))
             
             data = await loop.run_in_executor(
-                None, lambda: yf.download("GC=F",  # Gold Futures
+                None, lambda: yf.download("XAUUSD=X",  # Spot Gold CFD
                                           period=period,
                                           interval=interval,
                                           progress=False,
@@ -990,6 +994,18 @@ class TerminatorEngine:
             atr = dfs['fast']['ATRr_14'].iloc[-1]
             entry_price = current_price
             
+            # Determine trade type: SCALP vs SWING
+            # SWING: Higher score (80+), lower entropy, stronger trend (ADX > 25)
+            # SCALP: Lower score (60-79), higher entropy, weaker trend
+            adx_value = dfs['fast']['ADX_14'].iloc[-1] if 'ADX_14' in dfs['fast'].columns else 20
+            
+            if total_score >= 80 and market_entropy < 0.2 and adx_value > 25:
+                trade_type = "SWING TRADE 🏹"
+            elif total_score >= 70 and adx_value > 22:
+                trade_type = "SWING TRADE 🏹"
+            else:
+                trade_type = "SCALP TRADE ⚡"
+            
             # GOLD RR: Risk = 1.5*ATR, TP1 = 3:1, TP2 = 5:1, TP3 = 8:1
             stop_loss = entry_price - (atr * 1.5)  # 1.5 ATR risk
             tp1 = entry_price + (atr * 4.5)        # 3:1 RR
@@ -1009,6 +1025,7 @@ class TerminatorEngine:
                 'tp3': tp3,
                 'atr': atr,
                 'rr_ratio': 8,  # Max RR for TP3
+                'trade_type': trade_type,  # SCALP or SWING
                 'entropy': market_entropy,
                 'hmm_bull_prob': hmm_probs['BULL'] * 100,
                 'ai_confidence': ai_confidence,
@@ -1058,6 +1075,7 @@ class TerminatorEngine:
                     'tp2': signal['tp2'],
                     'tp3': signal['tp3'],
                     'score': signal['score'],
+                    'trade_type': signal.get('trade_type', 'TRADE'),
                     'entry_time': datetime.now(),
                     'breakeven_sl': signal['stop_loss'],
                     'sl_at_breakeven': False,
@@ -1088,6 +1106,7 @@ class TerminatorEngine:
                     'tp2': signal['tp2'],
                     'tp3': signal['tp3'],  # Show actual TP3 price
                     'rr_ratio': signal.get('rr_ratio', 8),  # RR ratio
+                    'trade_type': signal.get('trade_type', 'TRADE'),  # SCALP or SWING
                     'entropy': f"{signal['entropy']:.2f}",
                     'hmm_bull_prob': f"{signal['hmm_bull_prob']:.1f}",
                     'ai_confidence': f"{signal['ai_confidence']:.0f}",
@@ -1208,12 +1227,16 @@ class TerminatorEngine:
                     
                     self.current_position['stop_loss'] = self.current_position['entry_price']
                     self.current_position['sl_at_breakeven'] = True
+                    profit_pct = abs(current_price - entry) / entry * 100
+                    trade_type = self.current_position.get('trade_type', 'TRADE')
 
                     direction_emoji = "📈" if is_long else "📉"
                     await self.telegram.send_alert(
                         f"💰 **TP1 ELÉRVE** (${current_price:.2f})\n"
-                        f"🛡️ Stop Loss húzása **Breakeven szintre** (${self.current_position['entry_price']:.2f})\n"
-                        f"✅ Az első célár teljesült! Nyereség biztosítva.\n"
+                        f"🏷️ {trade_type}\n"
+                        f"� Nyereség: **+{profit_pct:.2f}%** | **1:3 RR biztosítva!**\n"
+                        f"�🛡️ Stop Loss húzása **Breakeven szintre** (${self.current_position['entry_price']:.2f})\n"
+                        f"✅ Az első célár teljesült!\n"
                         f"{direction_emoji} Irány: {self.current_position['side'].upper()}"
                     )
                     self.current_position['hit_levels'].append('tp1')
@@ -1226,11 +1249,13 @@ class TerminatorEngine:
                 if 'tp2' not in self.current_position['hit_levels']:
                     logger.info("🚀 TP2 HIT")
                     profit_pct = abs(current_price - entry) / entry * 100
+                    trade_type = self.current_position.get('trade_type', 'TRADE')
                     direction_emoji = "📈" if is_long else "📉"
                     
                     await self.telegram.send_alert(
                         f"🚀 **TP2 ELÉRVE** (${current_price:.2f})\n"
-                        f"💰 Nyereség: **+{profit_pct:.2f}%**\n"
+                        f"🏷️ {trade_type}\n"
+                        f"💰 Nyereség: **+{profit_pct:.2f}%** | **1:5 RR elérve!**\n"
                         f"📊 Remek teljesítmény! A piac az irányodba szakad.\n"
                         f"{direction_emoji} Irány: {self.current_position['side'].upper()}"
                     )
@@ -1245,16 +1270,23 @@ class TerminatorEngine:
                     if 'tp3' not in self.current_position['hit_levels']:
                         logger.info("🌌 TP3 HIT - GOLD RUSH!")
                         profit_pct = abs(current_price - entry) / entry * 100
+                        trade_type = self.current_position.get('trade_type', 'TRADE')
                         direction_emoji = "📈" if is_long else "📉"
                         
                         await self.telegram.send_alert(
                             f"🌌 **TP3 ELÉRVE - MAXIMUM PROFIT** (${current_price:.2f})\n"
-                            f"💎 Szupernyereség: **+{profit_pct:.2f}%**\n"
-                            f"🥇 GOLD RUSH! A Trailing ATR szint elérve!\n"
+                            f"🏷️ {trade_type}\n"
+                            f"💎 Szupernyereség: **+{profit_pct:.2f}%** | **1:8 RR MAXIMUM!**\n"
+                            f"🥇 GOLD RUSH! A végső cél elérve!\n"
                             f"🥂 Ezt az eredményt csak a legmagasabb szintű kereskedők érik el!\n"
-                            f"{direction_emoji} Irány volt: {self.current_position['side'].upper()}"
+                            f"{direction_emoji} Irány volt: {self.current_position['side'].upper()}\n"
+                            f"✅ Pozíció LEZÁRVA - Végső profit target elérve!"
                         )
                         self.current_position['hit_levels'].append('tp3')
+                        
+                        # TP3 is the final target - CLOSE THE POSITION!
+                        await self.close_position("TP3_MAX_PROFIT_REACHED")
+                        return
 
             # Stalling detection - SMART VERSION
             time_in_trade = (datetime.now() -
