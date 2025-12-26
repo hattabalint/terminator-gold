@@ -966,6 +966,7 @@ class TerminatorEngine:
         import aiohttp
         
         # SOURCE 1: goldprice.org (most accurate, always fresh)
+        logger.info("Trying goldprice.org API...")
         try:
             import ssl
             ssl_context = ssl.create_default_context()
@@ -977,6 +978,7 @@ class TerminatorEngine:
                 url = "https://data-asg.goldprice.org/dbXRates/USD"
                 headers = {"Accept": "application/json", "User-Agent": "Mozilla/5.0"}
                 async with session.get(url, timeout=aiohttp.ClientTimeout(total=10), headers=headers) as response:
+                    logger.info(f"goldprice.org response status: {response.status}")
                     if response.status == 200:
                         text = await response.text()
                         import json
@@ -984,13 +986,16 @@ class TerminatorEngine:
                         items = data.get('items', [])
                         if items and len(items) > 0:
                             price = items[0].get('xauPrice')
+                            logger.info(f"goldprice.org parsed price: {price}")
                             if price and price > 1000:  # Sanity check
-                                logger.info(f"✅ SPOT XAU/USD from goldprice.org: ${price:.2f}")
+                                logger.info(f"SPOT XAU/USD from goldprice.org: ${price:.2f}")
                                 return float(price)
+                        else:
+                            logger.info(f"goldprice.org no items found in response")
                     else:
-                        logger.warning(f"goldprice.org returned status {response.status}")
+                        logger.info(f"goldprice.org returned status {response.status}")
         except Exception as e:
-            logger.warning(f"goldprice.org failed: {e}")
+            logger.info(f"goldprice.org EXCEPTION: {type(e).__name__}: {e}")
         
         # SOURCE 2: gold-api.com (backup, slightly higher prices)
         try:
