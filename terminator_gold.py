@@ -967,17 +967,28 @@ class TerminatorEngine:
         
         # SOURCE 1: goldprice.org (most accurate, always fresh)
         try:
-            async with aiohttp.ClientSession() as session:
+            import ssl
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+            
+            connector = aiohttp.TCPConnector(ssl=ssl_context)
+            async with aiohttp.ClientSession(connector=connector) as session:
                 url = "https://data-asg.goldprice.org/dbXRates/USD"
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                headers = {"Accept": "application/json", "User-Agent": "Mozilla/5.0"}
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10), headers=headers) as response:
                     if response.status == 200:
-                        data = await response.json()
+                        text = await response.text()
+                        import json
+                        data = json.loads(text)
                         items = data.get('items', [])
                         if items and len(items) > 0:
                             price = items[0].get('xauPrice')
                             if price and price > 1000:  # Sanity check
                                 logger.info(f"✅ SPOT XAU/USD from goldprice.org: ${price:.2f}")
                                 return float(price)
+                    else:
+                        logger.warning(f"goldprice.org returned status {response.status}")
         except Exception as e:
             logger.warning(f"goldprice.org failed: {e}")
         
