@@ -956,16 +956,48 @@ class TerminatorEngine:
         return final_tier
 
     async def fetch_spot_gold_price(self) -> Optional[float]:
-        """Fetch REAL spot XAU/USD price from Swissquote Forex API.
+        """Fetch REAL spot XAU/USD price from multiple sources.
         
-        THIS IS THE CORRECT SOURCE - returns actual forex spot price (~$4480)
-        NOT yfinance futures garbage (~$4514)
+        Priority:
+        1. gold-api.com - Free, no API key, real-time spot prices
+        2. goldprice.org - Free, no API key, real-time spot prices  
+        3. Swissquote - FALLBACK ONLY (caches data during market closures!)
         """
         import aiohttp
         
+        # SOURCE 1: gold-api.com (most reliable, always fresh)
         try:
             async with aiohttp.ClientSession() as session:
-                # Swissquote Forex API - FREE, no API key, returns REAL spot XAU/USD
+                url = "https://api.gold-api.com/price/XAU"
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        price = data.get('price')
+                        if price and price > 1000:  # Sanity check
+                            logger.info(f"✅ SPOT XAU/USD from gold-api.com: ${price:.2f}")
+                            return float(price)
+        except Exception as e:
+            logger.warning(f"gold-api.com failed: {e}")
+        
+        # SOURCE 2: goldprice.org (backup, also reliable)
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = "https://data-asg.goldprice.org/dbXRates/USD"
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        items = data.get('items', [])
+                        if items and len(items) > 0:
+                            price = items[0].get('xauPrice')
+                            if price and price > 1000:  # Sanity check
+                                logger.info(f"✅ SPOT XAU/USD from goldprice.org: ${price:.2f}")
+                                return float(price)
+        except Exception as e:
+            logger.warning(f"goldprice.org failed: {e}")
+        
+        # SOURCE 3: Swissquote (FALLBACK - may cache stale data during market closures!)
+        try:
+            async with aiohttp.ClientSession() as session:
                 url = "https://forex-data-feed.swissquote.com/public-quotes/bboquotes/instrument/XAU/USD"
                 
                 async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as response:
@@ -973,7 +1005,6 @@ class TerminatorEngine:
                         data = await response.json()
                         
                         if data and len(data) > 0:
-                            # Get bid price from first result (elite spread is tightest)
                             spreads = data[0].get('spreadProfilePrices', [])
                             for spread in spreads:
                                 if spread.get('spreadProfile') == 'elite':
@@ -981,14 +1012,13 @@ class TerminatorEngine:
                                     ask = spread.get('ask')
                                     if bid and ask:
                                         mid_price = (bid + ask) / 2
-                                        logger.info(f"✅ SPOT XAU/USD from Swissquote: ${mid_price:.2f} (bid: ${bid:.2f}, ask: ${ask:.2f})")
+                                        logger.warning(f"⚠️ SPOT XAU/USD from Swissquote (fallback): ${mid_price:.2f}")
                                         return mid_price
                             
-                            # Fallback to first available price
                             if spreads:
                                 bid = spreads[0].get('bid')
                                 if bid:
-                                    logger.info(f"✅ SPOT XAU/USD from Swissquote: ${bid:.2f}")
+                                    logger.warning(f"⚠️ SPOT XAU/USD from Swissquote (fallback): ${bid:.2f}")
                                     return float(bid)
                                     
         except Exception as e:
