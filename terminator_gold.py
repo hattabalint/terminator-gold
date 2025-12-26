@@ -959,27 +959,13 @@ class TerminatorEngine:
         """Fetch REAL spot XAU/USD price from multiple sources.
         
         Priority:
-        1. gold-api.com - Free, no API key, real-time spot prices
-        2. goldprice.org - Free, no API key, real-time spot prices  
+        1. goldprice.org - Free, no API key, most accurate real-time spot prices
+        2. gold-api.com - Free, no API key, backup (slightly higher prices)  
         3. Swissquote - FALLBACK ONLY (caches data during market closures!)
         """
         import aiohttp
         
-        # SOURCE 1: gold-api.com (most reliable, always fresh)
-        try:
-            async with aiohttp.ClientSession() as session:
-                url = "https://api.gold-api.com/price/XAU"
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        price = data.get('price')
-                        if price and price > 1000:  # Sanity check
-                            logger.info(f"✅ SPOT XAU/USD from gold-api.com: ${price:.2f}")
-                            return float(price)
-        except Exception as e:
-            logger.warning(f"gold-api.com failed: {e}")
-        
-        # SOURCE 2: goldprice.org (backup, also reliable)
+        # SOURCE 1: goldprice.org (most accurate, always fresh)
         try:
             async with aiohttp.ClientSession() as session:
                 url = "https://data-asg.goldprice.org/dbXRates/USD"
@@ -994,6 +980,20 @@ class TerminatorEngine:
                                 return float(price)
         except Exception as e:
             logger.warning(f"goldprice.org failed: {e}")
+        
+        # SOURCE 2: gold-api.com (backup, slightly higher prices)
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = "https://api.gold-api.com/price/XAU"
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        price = data.get('price')
+                        if price and price > 1000:  # Sanity check
+                            logger.info(f"✅ SPOT XAU/USD from gold-api.com: ${price:.2f}")
+                            return float(price)
+        except Exception as e:
+            logger.warning(f"gold-api.com failed: {e}")
         
         # SOURCE 3: Swissquote (FALLBACK - may cache stale data during market closures!)
         try:
