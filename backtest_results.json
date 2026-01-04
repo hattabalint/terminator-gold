@@ -1,0 +1,40 @@
+{
+  "summary": {
+    "starting_balance": 1000.0,
+    "ending_balance": 5742.1,
+    "total_profit_loss": 4742.1,
+    "profit_percent": 474.21,
+    "max_drawdown_percent": 32.55
+  },
+  "trade_stats": {
+    "total_trades": 624,
+    "wins": 168,
+    "losses": 456,
+    "win_rate_percent": 26.92,
+    "biggest_win": 360.49,
+    "biggest_loss": -58.04,
+    "average_win": 73.71,
+    "average_loss": -16.76,
+    "average_rr_on_wins": 3.85
+  },
+  "trade_types": {
+    "scalp_trades": 524,
+    "standard_trades": 100,
+    "swing_trades": 0
+  },
+  "direction_stats": {
+    "long_trades": 373,
+    "long_wins": 96,
+    "long_win_rate": 25.74,
+    "short_trades": 251,
+    "short_wins": 72,
+    "short_win_rate": 28.69
+  },
+  "exit_reasons": {
+    "TP1": 119,
+    "TP2": 34,
+    "TP3": 15,
+    "SL": 456,
+    "TIMEOUT": 0
+  }
+}
