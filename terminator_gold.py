@@ -42,26 +42,47 @@ class Config:
     MAX_POSITION_SIZE = 0.1  # Max 10% of account
     TERMINATOR_MULTIPLIER = 2.5  # Aggressive mode multiplier
 
-    # TIMEFRAMES (Gold-optimized - slightly longer for smoother signals)
-    TIMEFRAMES = {"fast": "15m", "medium": "1h", "slow": "4h"}
+    # TIMEFRAMES - EXTENDED FOR SMC MULTI-TIMEFRAME ANALYSIS
+    # All main timeframes for proper market structure analysis
+    TIMEFRAMES = {
+        "scalp": "15m",      # Scalp entries, FVG detection
+        "intraday": "30m",   # Intraday structure
+        "medium": "1h",      # Medium-term structure
+        "swing": "4h",       # Swing structure, main CHoCH/BOS
+        "daily": "1d"        # Daily bias, major structure
+    }
+    
+    # SMC (SMART MONEY CONCEPTS) CONFIGURATION
+    ZIGZAG_DEPTH = 5              # Min candles between swing points
+    ZIGZAG_DEVIATION = 0.001      # Min 0.1% move for swing ($2.60 at $2600)
+    CHOCH_LOOKBACK = 100          # Candles to look back for structure
+    FVG_MIN_GAP_PCT = 0.0005      # Min 0.05% gap for FVG ($1.30 at $2600)
+    
+    # STRICT SL LIMITS (USD) - PRECISE LEVELS!
+    SL_LIMITS = {
+        "SCALP": 6,      # Max $6 SL for scalp trades
+        "STANDARD": 10,  # Max $10 SL for normal trades
+        "SWING": 25      # Max $25 SL for swing trades
+    }
 
     # THRESHOLDS (GOLD-SPECIFIC - lower volatility asset)
-    MIN_SCORE = 55  # Lowered to allow more flexible RR trades
+    MIN_SCORE = 60  # Raised for quality over quantity
     TERMINATOR_SCORE = 80  # Ultra-high confidence threshold
     HMM_BEAR_THRESHOLD = 0.80  # 80% probability to cancel longs
+    HMM_BULL_THRESHOLD = 0.80  # 80% probability to cancel shorts
     FLASH_CRASH_THRESHOLD = 0.005  # 0.5% drop in 1 second (Gold is less volatile)
     ENTROPY_THRESHOLD = 0.25  # Lower chaos threshold for Gold
     ADX_THRESHOLD = 20  # Lower trend strength minimum (Gold trends smoother)
-    MIN_ACTIVE_ENGINES = 1  # Minimum engines that must be active for trade (was 2, but signals work with 1)
+    MIN_ACTIVE_ENGINES = 2  # Raised back to 2 for quality signals
 
     # FLEXIBLE RR TIER CONFIGURATION
-    # SCALP: 55-59 score -> 1:3-1:5 RR (quick trades)
-    # STANDARD: 60-79 score -> 1:5-1:8 RR (regular trades)  
-    # SWING: 80+ score -> 1:8-1:10 RR (high confidence)
+    # SCALP: 60-69 score -> 1:3-1:5 RR (quick trades, max $6 SL)
+    # STANDARD: 70-79 score -> 1:5-1:8 RR (regular trades, max $10 SL)  
+    # SWING: 80+ score -> 1:8-1:10 RR (high confidence, max $25 SL)
     RR_TIERS = {
-        "SCALP": {"min_score": 55, "max_score": 59, "sl_mult": 1.2, "tp1_mult": 3.6, "tp2_mult": 6.0, "tp3_mult": None, "max_rr": 5},
-        "STANDARD": {"min_score": 60, "max_score": 79, "sl_mult": 1.5, "tp1_mult": 4.5, "tp2_mult": 7.5, "tp3_mult": 12.0, "max_rr": 8},
-        "SWING": {"min_score": 80, "max_score": 100, "sl_mult": 1.5, "tp1_mult": 4.5, "tp2_mult": 7.5, "tp3_mult": 15.0, "max_rr": 10}
+        "SCALP": {"min_score": 60, "max_score": 69, "sl_mult": 1.0, "tp1_mult": 3.0, "tp2_mult": 5.0, "tp3_mult": None, "max_rr": 5},
+        "STANDARD": {"min_score": 70, "max_score": 79, "sl_mult": 1.5, "tp1_mult": 4.5, "tp2_mult": 7.5, "tp3_mult": 12.0, "max_rr": 8},
+        "SWING": {"min_score": 80, "max_score": 100, "sl_mult": 2.0, "tp1_mult": 6.0, "tp2_mult": 10.0, "tp3_mult": 16.0, "max_rr": 10}
     }
 
     # PATTERN RECOGNITION
@@ -160,6 +181,373 @@ class HiddenMarkovModel:
             self.states[i]: float(posterior[i])
             for i in range(self.n_states)
         }
+
+
+# ==================== SMC (SMART MONEY CONCEPTS) ENGINE ====================
+class SMCEngine:
+    """Smart Money Concepts: ZigZag, CHoCH, BOS, FVG detection for professional trading"""
+    
+    def __init__(self, config: Config):
+        self.config = config
+        self.structure_cache = {}  # Cache for multi-timeframe structure
+    
+    def find_zigzag_pivots(self, df: pd.DataFrame) -> List[Dict]:
+        """
+        ZigZag Algorithm - Find swing highs and lows
+        Returns list of pivots: [{'type': 'HIGH'/'LOW', 'price': float, 'index': int, 'timestamp': datetime}]
+        """
+        if len(df) < self.config.ZIGZAG_DEPTH * 2:
+            return []
+        
+        pivots = []
+        depth = self.config.ZIGZAG_DEPTH
+        deviation = self.config.ZIGZAG_DEVIATION
+        
+        highs = df['high'].values
+        lows = df['low'].values
+        closes = df['close'].values
+        
+        # Find swing highs
+        for i in range(depth, len(df) - depth):
+            # Check if this is a swing high (highest high in window)
+            window_highs = highs[i - depth:i + depth + 1]
+            if highs[i] == max(window_highs):
+                # Check deviation from surrounding
+                left_low = min(lows[i - depth:i])
+                right_low = min(lows[i:i + depth + 1])
+                
+                if (highs[i] - left_low) / left_low >= deviation:
+                    pivots.append({
+                        'type': 'HIGH',
+                        'price': float(highs[i]),
+                        'index': i,
+                        'timestamp': df.iloc[i]['timestamp'] if 'timestamp' in df.columns else i
+                    })
+        
+        # Find swing lows
+        for i in range(depth, len(df) - depth):
+            # Check if this is a swing low (lowest low in window)
+            window_lows = lows[i - depth:i + depth + 1]
+            if lows[i] == min(window_lows):
+                # Check deviation from surrounding
+                left_high = max(highs[i - depth:i])
+                right_high = max(highs[i:i + depth + 1])
+                
+                if (left_high - lows[i]) / lows[i] >= deviation:
+                    pivots.append({
+                        'type': 'LOW',
+                        'price': float(lows[i]),
+                        'index': i,
+                        'timestamp': df.iloc[i]['timestamp'] if 'timestamp' in df.columns else i
+                    })
+        
+        # Sort by index
+        pivots.sort(key=lambda x: x['index'])
+        
+        # Remove duplicate pivots (same type in sequence)
+        filtered_pivots = []
+        last_type = None
+        for pivot in pivots:
+            if pivot['type'] != last_type:
+                filtered_pivots.append(pivot)
+                last_type = pivot['type']
+            else:
+                # Keep the more extreme one
+                if filtered_pivots:
+                    if pivot['type'] == 'HIGH' and pivot['price'] > filtered_pivots[-1]['price']:
+                        filtered_pivots[-1] = pivot
+                    elif pivot['type'] == 'LOW' and pivot['price'] < filtered_pivots[-1]['price']:
+                        filtered_pivots[-1] = pivot
+        
+        return filtered_pivots
+    
+    def detect_market_structure(self, df: pd.DataFrame) -> Dict:
+        """
+        Detect CHoCH (Change of Character) and BOS (Break of Structure)
+        
+        Returns:
+        {
+            'trend': 'BULLISH' / 'BEARISH' / 'RANGING',
+            'choch': {'detected': bool, 'type': 'BULLISH'/'BEARISH', 'price': float},
+            'bos': {'detected': bool, 'type': 'BULLISH'/'BEARISH', 'price': float},
+            'last_swing_high': float,
+            'last_swing_low': float,
+            'structure_break_level': float  # Key level for direction filter
+        }
+        """
+        pivots = self.find_zigzag_pivots(df)
+        
+        result = {
+            'trend': 'RANGING',
+            'choch': {'detected': False, 'type': None, 'price': None},
+            'bos': {'detected': False, 'type': None, 'price': None},
+            'last_swing_high': None,
+            'last_swing_low': None,
+            'structure_break_level': None,
+            'pivots': pivots
+        }
+        
+        if len(pivots) < 4:
+            return result
+        
+        # Get last few swing points
+        swing_highs = [p for p in pivots if p['type'] == 'HIGH'][-3:]
+        swing_lows = [p for p in pivots if p['type'] == 'LOW'][-3:]
+        
+        if not swing_highs or not swing_lows:
+            return result
+        
+        result['last_swing_high'] = swing_highs[-1]['price']
+        result['last_swing_low'] = swing_lows[-1]['price']
+        
+        current_price = float(df['close'].iloc[-1])
+        
+        # Determine trend from higher highs/lower lows
+        if len(swing_highs) >= 2 and len(swing_lows) >= 2:
+            hh = swing_highs[-1]['price'] > swing_highs[-2]['price']  # Higher High
+            hl = swing_lows[-1]['price'] > swing_lows[-2]['price']    # Higher Low
+            lh = swing_highs[-1]['price'] < swing_highs[-2]['price']  # Lower High
+            ll = swing_lows[-1]['price'] < swing_lows[-2]['price']    # Lower Low
+            
+            if hh and hl:
+                result['trend'] = 'BULLISH'
+            elif lh and ll:
+                result['trend'] = 'BEARISH'
+        
+        # Detect CHoCH (Change of Character)
+        # BULLISH CHoCH: Price breaks above last swing high after downtrend
+        # BEARISH CHoCH: Price breaks below last swing low after uptrend
+        
+        if result['trend'] == 'BEARISH':
+            # Look for bullish CHoCH (break of last swing high)
+            if current_price > result['last_swing_high']:
+                result['choch'] = {
+                    'detected': True,
+                    'type': 'BULLISH',
+                    'price': result['last_swing_high']
+                }
+                result['structure_break_level'] = result['last_swing_low']
+                
+        elif result['trend'] == 'BULLISH':
+            # Look for bearish CHoCH (break of last swing low)
+            if current_price < result['last_swing_low']:
+                result['choch'] = {
+                    'detected': True,
+                    'type': 'BEARISH',
+                    'price': result['last_swing_low']
+                }
+                result['structure_break_level'] = result['last_swing_high']
+        
+        # Detect BOS (Break of Structure) - trend continuation
+        if result['trend'] == 'BULLISH' and not result['choch']['detected']:
+            if current_price > result['last_swing_high']:
+                result['bos'] = {
+                    'detected': True,
+                    'type': 'BULLISH',
+                    'price': result['last_swing_high']
+                }
+                result['structure_break_level'] = result['last_swing_low']
+                
+        elif result['trend'] == 'BEARISH' and not result['choch']['detected']:
+            if current_price < result['last_swing_low']:
+                result['bos'] = {
+                    'detected': True,
+                    'type': 'BEARISH',
+                    'price': result['last_swing_low']
+                }
+                result['structure_break_level'] = result['last_swing_high']
+        
+        return result
+    
+    def find_fvg_zones(self, df: pd.DataFrame) -> List[Dict]:
+        """
+        Find Fair Value Gaps (FVG) - Imbalance zones
+        
+        BULLISH FVG: Gap between candle 1 high and candle 3 low (3 candle pattern)
+        BEARISH FVG: Gap between candle 1 low and candle 3 high
+        
+        Returns list of FVG zones for potential entries/targets
+        """
+        fvg_zones = []
+        min_gap = self.config.FVG_MIN_GAP_PCT
+        
+        if len(df) < 5:
+            return fvg_zones
+        
+        for i in range(2, len(df)):
+            candle1_high = df['high'].iloc[i - 2]
+            candle1_low = df['low'].iloc[i - 2]
+            candle3_high = df['high'].iloc[i]
+            candle3_low = df['low'].iloc[i]
+            current_price = df['close'].iloc[-1]
+            
+            # BULLISH FVG: Candle 3 low > Candle 1 high (gap up)
+            if candle3_low > candle1_high:
+                gap_size = (candle3_low - candle1_high) / candle1_high
+                if gap_size >= min_gap:
+                    # Check if FVG is still valid (not filled)
+                    zone_top = candle3_low
+                    zone_bottom = candle1_high
+                    
+                    # FVG is valid if price hasn't filled it completely
+                    if current_price > zone_bottom:
+                        fvg_zones.append({
+                            'type': 'BULLISH',
+                            'top': float(zone_top),
+                            'bottom': float(zone_bottom),
+                            'midpoint': float((zone_top + zone_bottom) / 2),
+                            'index': i,
+                            'filled': current_price < zone_top  # Partially filled
+                        })
+            
+            # BEARISH FVG: Candle 3 high < Candle 1 low (gap down)
+            if candle3_high < candle1_low:
+                gap_size = (candle1_low - candle3_high) / candle3_high
+                if gap_size >= min_gap:
+                    zone_top = candle1_low
+                    zone_bottom = candle3_high
+                    
+                    if current_price < zone_top:
+                        fvg_zones.append({
+                            'type': 'BEARISH',
+                            'top': float(zone_top),
+                            'bottom': float(zone_bottom),
+                            'midpoint': float((zone_top + zone_bottom) / 2),
+                            'index': i,
+                            'filled': current_price > zone_bottom
+                        })
+        
+        # Return only recent valid FVGs (last 10)
+        return fvg_zones[-10:]
+    
+    def get_smc_bias(self, multi_tf_structures: Dict) -> Dict:
+        """
+        Analyze multi-timeframe SMC structure to determine trading bias
+        
+        Returns:
+        {
+            'bias': 'LONG' / 'SHORT' / 'NEUTRAL',
+            'confidence': 0-100,
+            'long_allowed': bool,
+            'short_allowed': bool,
+            'reason': str
+        }
+        """
+        # Get structure from each timeframe
+        daily_struct = multi_tf_structures.get('daily', {})
+        swing_struct = multi_tf_structures.get('swing', {})  # 4H
+        medium_struct = multi_tf_structures.get('medium', {})  # 1H
+        scalp_struct = multi_tf_structures.get('scalp', {})  # 15m
+        
+        result = {
+            'bias': 'NEUTRAL',
+            'confidence': 50,
+            'long_allowed': True,
+            'short_allowed': True,
+            'reason': 'Analyzing structure...',
+            'structures': multi_tf_structures
+        }
+        
+        # RULE 1: Daily CHoCH overrides everything
+        if daily_struct.get('choch', {}).get('detected'):
+            choch_type = daily_struct['choch']['type']
+            if choch_type == 'BEARISH':
+                result['long_allowed'] = False
+                result['bias'] = 'SHORT'
+                result['reason'] = 'Daily CHoCH BEARISH - LONGS FORBIDDEN!'
+                result['confidence'] = 85
+            elif choch_type == 'BULLISH':
+                result['short_allowed'] = False
+                result['bias'] = 'LONG'
+                result['reason'] = 'Daily CHoCH BULLISH - SHORTS FORBIDDEN!'
+                result['confidence'] = 85
+            return result
+        
+        # RULE 2: 4H CHoCH is major direction filter
+        if swing_struct.get('choch', {}).get('detected'):
+            choch_type = swing_struct['choch']['type']
+            if choch_type == 'BEARISH':
+                result['long_allowed'] = False
+                result['bias'] = 'SHORT'
+                result['reason'] = '4H CHoCH BEARISH - LONGS FORBIDDEN!'
+                result['confidence'] = 80
+            elif choch_type == 'BULLISH':
+                result['short_allowed'] = False
+                result['bias'] = 'LONG'
+                result['reason'] = '4H CHoCH BULLISH - SHORTS FORBIDDEN!'
+                result['confidence'] = 80
+            return result
+        
+        # RULE 3: 4H BOS confirms trend continuation
+        if swing_struct.get('bos', {}).get('detected'):
+            bos_type = swing_struct['bos']['type']
+            if bos_type == 'BULLISH':
+                result['bias'] = 'LONG'
+                result['reason'] = '4H BOS BULLISH - Trend continuation'
+                result['confidence'] = 70
+            elif bos_type == 'BEARISH':
+                result['bias'] = 'SHORT'
+                result['reason'] = '4H BOS BEARISH - Trend continuation'
+                result['confidence'] = 70
+        
+        # RULE 4: 1H structure adds confidence
+        if medium_struct.get('trend') == 'BULLISH' and result['bias'] == 'LONG':
+            result['confidence'] += 10
+            result['reason'] += ' | 1H confirms BULLISH'
+        elif medium_struct.get('trend') == 'BEARISH' and result['bias'] == 'SHORT':
+            result['confidence'] += 10
+            result['reason'] += ' | 1H confirms BEARISH'
+        
+        # RULE 5: If no clear bias from higher TF, use 1H trend
+        if result['bias'] == 'NEUTRAL':
+            if medium_struct.get('trend') == 'BULLISH':
+                result['bias'] = 'LONG'
+                result['reason'] = '1H trend BULLISH'
+                result['confidence'] = 60
+            elif medium_struct.get('trend') == 'BEARISH':
+                result['bias'] = 'SHORT'
+                result['reason'] = '1H trend BEARISH'
+                result['confidence'] = 60
+        
+        return result
+    
+    def calculate_structure_sl(self, direction: str, structure: Dict, current_price: float, tier: str) -> float:
+        """
+        Calculate precise SL based on swing structure levels
+        SL should be placed just beyond the last swing low (for LONG) or swing high (for SHORT)
+        """
+        max_sl = self.config.SL_LIMITS.get(tier, 10)
+        buffer = 1.0  # $1 buffer beyond structure
+        
+        if direction == 'LONG':
+            # SL below last swing low
+            swing_low = structure.get('last_swing_low')
+            if swing_low:
+                structure_sl = swing_low - buffer
+                sl_distance = current_price - structure_sl
+                
+                # If structure SL is too far, cap it
+                if sl_distance > max_sl:
+                    structure_sl = current_price - max_sl
+                    
+                return float(structure_sl)
+            else:
+                return float(current_price - max_sl)
+        
+        else:  # SHORT
+            # SL above last swing high
+            swing_high = structure.get('last_swing_high')
+            if swing_high:
+                structure_sl = swing_high + buffer
+                sl_distance = structure_sl - current_price
+                
+                # If structure SL is too far, cap it
+                if sl_distance > max_sl:
+                    structure_sl = current_price + max_sl
+                    
+                return float(structure_sl)
+            else:
+                return float(current_price + max_sl)
 
 
 # ==================== TECHNICAL INDICATORS ENGINE ====================
@@ -716,7 +1104,19 @@ class TelegramNotifier:
             trade_type = signal_data.get('trade_type', 'TRADE')
             active_engines = signal_data.get('active_engines', 'N/A')
             
-            # --- ÜZENET ÖSSZEÁLLÍTÁSA (GOLD BRANDING) ---
+            # Get SMC data
+            smc_bias = signal_data.get('smc_bias', {})
+            smc_reason = smc_bias.get('reason', 'N/A')
+            smc_confidence = smc_bias.get('confidence', 0)
+            sl_distance = signal_data.get('sl_distance', abs(entry - sl))
+            swing_high = signal_data.get('swing_high', 'N/A')
+            swing_low = signal_data.get('swing_low', 'N/A')
+            
+            # Format swing levels
+            swing_high_str = f"${swing_high:.2f}" if isinstance(swing_high, (int, float)) else "N/A"
+            swing_low_str = f"${swing_low:.2f}" if isinstance(swing_low, (int, float)) else "N/A"
+            
+            # --- ÜZENET ÖSSZEÁLLÍTÁSA (GOLD BRANDING + SMC) ---
             message = f"""
 🥇 **TERMINATOR GOLD SIGNAL** 🥇
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -729,7 +1129,13 @@ class TelegramNotifier:
 🤖 **Active Engines:** **{active_engines}/3**
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-🤖 **STRATEGY ANALYSIS / STRATÉGIA ELEMZÉS:**
+📊 **SMC ANALYSIS / STRUKTÚRA:**
+• 🎯 SMC Bias: **{smc_bias.get('bias', 'N/A')}** ({smc_confidence}%)
+• 📍 Reason: *{smc_reason}*
+• 📈 Swing High: {swing_high_str}
+• 📉 Swing Low: {swing_low_str}
+
+🤖 **STRATEGY ANALYSIS / STRATÉGIA:**
 • 🎯 Sniper Engine: {e_sniper}
 • 🥇 Whale Engine (DXY Focus): {e_whale}
 • 📊 Contrarian Engine: {e_contra}
@@ -737,20 +1143,20 @@ class TelegramNotifier:
 🧠 **AI METRICS / MÉRŐSZÁMOK:**
 • Oracle (HMM) Bull: **{signal_data.get('hmm_bull_prob', 'N/A')}%**
 • AI Confidence: **{signal_data.get('ai_confidence', 'N/A')}%**
-• Market Chaos (Entropy): **{signal_data.get('entropy', 'N/A')}**
+• Market Chaos: **{signal_data.get('entropy', 'N/A')}**
 
 💰 **TRADE LEVELS / SZINTEK:**
 • Entry / Belépő: **${entry:.2f}**
-• Stop Loss / Stoploss: **${sl:.2f}**
+• Stop Loss: **${sl:.2f}** (${sl_distance:.2f} SL)
 • Target 1 (TP1): **${signal_data['tp1']:.2f}** *(1:3 RR)*
 • Target 2 (TP2): **${signal_data['tp2']:.2f}** *(1:5 RR)*
 • Target 3 (TP3): **{tp3_display}** *({tp3_rr_text})*
 
 📈 **RISK MANAGEMENT / KOCKÁZAT:**
-• Account Risk / Kockázat: **{risk_pct}%**
-• Position Size / Pozíció: ${pos_size:.2f} USD
+• Account Risk: **{risk_pct}%**
+• Position Size: ${pos_size:.2f} USD
 ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬
-🥇 *GOLD Edition - Flexible RR* 🥇
+🥇 *GOLD Edition + SMC Strategy* 🥇
 """
             await self.bot.send_message(chat_id=self.chat_id,
                                         text=message,
@@ -813,12 +1219,13 @@ class DatabaseManager:
 
 # ==================== MAIN TRADING ENGINE ====================
 class TerminatorEngine:
-    """The God-Mode Trading System - GOLD EDITION"""
+    """The God-Mode Trading System - GOLD EDITION with SMC (Smart Money Concepts)"""
 
     def __init__(self, config: Config):
         self.config = config
         self.exchange = None
         self.hmm = HiddenMarkovModel()
+        self.smc = SMCEngine(config)  # NEW: Smart Money Concepts Engine
         self.pattern_ai = PatternRecognition(config)
         self.risk_manager = RiskManager(config)
         self.telegram = TelegramNotifier(config)
@@ -828,6 +1235,7 @@ class TerminatorEngine:
         self.current_position = None
         self.paper_balance = 10000.0  # Simulated balance for paper trading
         self.paper_trades = []  # Track paper trades
+        self.last_candle_timestamps = {}  # W4It: Track candle close times
 
     async def initialize(self):
         """Initialize exchange and database"""
@@ -1120,7 +1528,16 @@ class TerminatorEngine:
             return pd.DataFrame()
 
     async def analyze_market(self) -> Optional[Dict]:
-        """Complete market analysis across all systems"""
+        """
+        Complete market analysis with SMC (Smart Money Concepts)
+        
+        Key improvements:
+        - Multi-timeframe SMC structure analysis (15m, 30m, 1h, 4h, Daily)
+        - CHoCH/BOS detection for direction filtering
+        - W4It: Only act on CLOSED candles
+        - Precise SL based on swing structure
+        - SUPPORTS BOTH LONG AND SHORT!
+        """
         try:
             # Fetch multi-timeframe data
             dfs = {}
@@ -1136,16 +1553,49 @@ class TerminatorEngine:
                     return None
                 df = IndicatorEngine.calculate_all(df)
                 dfs[name] = df
+            
+            # ==================== W4It: CANDLE CLOSE CONFIRMATION ====================
+            # Only trade on CONFIRMED (closed) candles - not on live candle movements!
+            scalp_df = dfs.get('scalp', dfs.get('medium'))
+            if 'timestamp' in scalp_df.columns:
+                last_candle_time = scalp_df['timestamp'].iloc[-1]
+                last_seen = self.last_candle_timestamps.get('scalp')
+                
+                if last_seen is not None and last_candle_time == last_seen:
+                    # Same candle as before - wait for it to close!
+                    return None
+                
+                self.last_candle_timestamps['scalp'] = last_candle_time
+                logger.info(f"✅ W4It: New candle confirmed at {last_candle_time}")
 
-            # Get current price
-            current_price = dfs['fast']['close'].iloc[-1]
+            # Get current price from scalp timeframe
+            current_price = float(dfs['scalp']['close'].iloc[-1])
 
+            # ==================== SMC MULTI-TIMEFRAME ANALYSIS ====================
+            # Analyze market structure on each timeframe
+            multi_tf_structures = {}
+            for tf_name in ['daily', 'swing', 'medium', 'intraday', 'scalp']:
+                if tf_name in dfs:
+                    structure = self.smc.detect_market_structure(dfs[tf_name])
+                    multi_tf_structures[tf_name] = structure
+                    
+                    # Log important structure events
+                    if structure['choch']['detected']:
+                        logger.warning(f"📊 {tf_name.upper()} CHoCH {structure['choch']['type']} detected!")
+                    if structure['bos']['detected']:
+                        logger.info(f"📈 {tf_name.upper()} BOS {structure['bos']['type']} - trend continues")
+            
+            # Get SMC bias (direction filter)
+            smc_bias = self.smc.get_smc_bias(multi_tf_structures)
+            logger.info(f"🎯 SMC Bias: {smc_bias['bias']} | Confidence: {smc_bias['confidence']}% | {smc_bias['reason']}")
+            
+            # Find FVG zones on scalp timeframe for entry
+            fvg_zones = self.smc.find_fvg_zones(dfs['scalp'])
+            
             # Flash crash detection
             if self.market_data and self.market_data.detect_flash_crash(current_price):
-                logger.critical(
-                    "🚨 GOLD FLASH CRASH DETECTED - EMERGENCY PROTOCOLS 🚨")
-                await self.telegram.send_alert(
-                    "GOLD FLASH CRASH DETECTED - ALL POSITIONS CLOSED")
+                logger.critical("🚨 GOLD FLASH CRASH DETECTED - EMERGENCY PROTOCOLS 🚨")
+                await self.telegram.send_alert("GOLD FLASH CRASH DETECTED - ALL POSITIONS CLOSED")
                 if self.current_position:
                     await self.close_position("FLASH_CRASH")
                 return None
@@ -1153,36 +1603,40 @@ class TerminatorEngine:
             # Get external market data (CRITICAL FOR GOLD)
             external_data = await ExternalMarkets.get_spx_dxy_data()
 
-            # Get funding and order book (funding = 0 for forex)
+            # Get order book imbalance
             funding_rate = 0.0  # No funding in forex
-            obi = 0.0  # Order book imbalance (if available)
+            obi = 0.0
             if self.market_data:
                 obi = await self.market_data.get_order_book_imbalance()
 
-            # HMM Oracle Analysis
+            # ==================== HMM ORACLE ANALYSIS ====================
             price_changes = dfs['medium']['returns'].dropna().tail(50).tolist()
             hmm_probs = self.hmm.calculate_state_probabilities(price_changes)
 
-            # CRITICAL: Cancel longs if high bear probability
-            if hmm_probs['BEAR'] > self.config.HMM_BEAR_THRESHOLD:
-                logger.warning(
-                    f"⚠️ ORACLE WARNING: {hmm_probs['BEAR']*100:.1f}% BEAR PROBABILITY")
-                if self.current_position and self.current_position[
-                        'side'] == 'long':
-                    await self.close_position("HMM_BEAR_SIGNAL")
+            # HMM direction filter
+            if hmm_probs['BEAR'] > self.config.HMM_BEAR_THRESHOLD and smc_bias['bias'] == 'LONG':
+                logger.warning(f"⚠️ ORACLE WARNING: {hmm_probs['BEAR']*100:.1f}% BEAR - Blocking LONG")
+                return None
+            if hmm_probs['BULL'] > self.config.HMM_BULL_THRESHOLD and smc_bias['bias'] == 'SHORT':
+                logger.warning(f"⚠️ ORACLE WARNING: {hmm_probs['BULL']*100:.1f}% BULL - Blocking SHORT")
                 return None
 
-            # Trinity Engines Analysis
+            # ==================== TRINITY ENGINES ANALYSIS ====================
             session = self.get_trading_session()
 
-            engine_a = TrinityEngines.engine_sniper(dfs['fast'])
-            engine_b = TrinityEngines.engine_whale(dfs['medium'], session,
-                                                   external_data)
+            engine_a = TrinityEngines.engine_sniper(dfs['scalp'])
+            engine_b = TrinityEngines.engine_whale(dfs['medium'], session, external_data)
             engine_c = TrinityEngines.engine_contrarian(funding_rate, obi)
 
             # Calculate total score
-            total_score = engine_a['score'] + engine_b['score'] + engine_c[
-                'score']
+            total_score = engine_a['score'] + engine_b['score'] + engine_c['score']
+            
+            # Add SMC confidence bonus
+            if smc_bias['confidence'] >= 80:
+                total_score += 15
+                logger.info(f"💎 SMC CONFIDENCE BONUS +15 (total: {total_score})")
+            elif smc_bias['confidence'] >= 70:
+                total_score += 10
 
             # Check minimum active engines
             active_engines = sum([
@@ -1196,58 +1650,98 @@ class TerminatorEngine:
                 return None
 
             # Pattern Recognition AI
-            recent_prices = dfs['medium']['close'].tail(
-                self.config.PATTERN_HISTORY_CANDLES).values
+            recent_prices = dfs['medium']['close'].tail(self.config.PATTERN_HISTORY_CANDLES).values
             ai_confidence, pattern_matches = self.pattern_ai.find_similar_patterns(
-                recent_prices, dfs['slow'])
+                recent_prices, dfs['swing'])
 
             # Add AI bonus
             if ai_confidence > 70:
                 total_score += 15
 
             # Calculate entropy
-            returns = dfs['fast']['returns'].dropna().tail(50).values
-            market_entropy = entropy(np.abs(returns) +
-                                     1e-10) if len(returns) > 10 else 1.0
+            returns = dfs['scalp']['returns'].dropna().tail(50).values
+            market_entropy = entropy(np.abs(returns) + 1e-10) if len(returns) > 10 else 1.0
 
             # Check minimum score
             if total_score < self.config.MIN_SCORE:
+                logger.info(f"📉 Score {total_score} below minimum {self.config.MIN_SCORE} - skipping")
                 return None
 
-            # Determine direction (simplified - prefer long in this version)
-            direction = "LONG"
-
-            # Calculate entry levels with FLEXIBLE Risk-Reward ratios
-            atr = dfs['fast']['ATRr_14'].iloc[-1]
-            entry_price = current_price
-            adx_value = dfs['fast']['ADX_14'].iloc[-1] if 'ADX_14' in dfs['fast'].columns else 20
+            # ==================== DETERMINE DIRECTION FROM SMC ====================
+            # Direction is now determined by SMC bias, not hardcoded LONG!
+            if smc_bias['bias'] == 'NEUTRAL':
+                logger.info("⚖️ SMC NEUTRAL - No clear direction, skipping")
+                return None
             
-            # Determine optimal RR tier based on market conditions
+            direction = smc_bias['bias']  # 'LONG' or 'SHORT'
+            
+            # Double-check direction is allowed
+            if direction == 'LONG' and not smc_bias['long_allowed']:
+                logger.warning(f"🚫 LONG FORBIDDEN by SMC: {smc_bias['reason']}")
+                return None
+            if direction == 'SHORT' and not smc_bias['short_allowed']:
+                logger.warning(f"🚫 SHORT FORBIDDEN by SMC: {smc_bias['reason']}")
+                return None
+
+            logger.info(f"🎯 DIRECTION: {direction} | Score: {total_score}")
+
+            # ==================== CALCULATE PRECISE SL/TP ====================
+            atr = float(dfs['scalp']['ATRr_14'].iloc[-1])
+            entry_price = current_price
+            adx_value = float(dfs['scalp']['ADX_14'].iloc[-1]) if 'ADX_14' in dfs['scalp'].columns else 20
+            
+            # Determine RR tier
             rr_tier = self.determine_rr_tier(total_score, market_entropy, adx_value, session)
             tier_config = self.config.RR_TIERS[rr_tier]
             
-            # Calculate TP levels based on tier
-            stop_loss = entry_price - (atr * tier_config['sl_mult'])
-            tp1 = entry_price + (atr * tier_config['tp1_mult'])
-            tp2 = entry_price + (atr * tier_config['tp2_mult'])
+            # Get structure for precise SL placement
+            scalp_structure = multi_tf_structures.get('scalp', {})
             
-            # TP3 only for STANDARD and SWING tiers
-            if tier_config['tp3_mult']:
-                tp3 = entry_price + (atr * tier_config['tp3_mult'])
-            else:
-                tp3 = None  # No TP3 for SCALP trades
+            # Calculate PRECISE SL based on swing structure (not arbitrary ATR!)
+            stop_loss = self.smc.calculate_structure_sl(
+                direction, 
+                scalp_structure, 
+                current_price, 
+                rr_tier
+            )
+            
+            # Calculate SL distance in dollars
+            sl_distance = abs(entry_price - stop_loss)
+            max_sl_allowed = self.config.SL_LIMITS.get(rr_tier, 10)
+            
+            # Validate SL is within limits
+            if sl_distance > max_sl_allowed:
+                logger.warning(f"⚠️ SL ${sl_distance:.2f} exceeds max ${max_sl_allowed} for {rr_tier} - capping")
+                if direction == 'LONG':
+                    stop_loss = entry_price - max_sl_allowed
+                else:
+                    stop_loss = entry_price + max_sl_allowed
+                sl_distance = max_sl_allowed
+            
+            logger.info(f"📍 PRECISE SL: ${stop_loss:.2f} (distance: ${sl_distance:.2f}, max: ${max_sl_allowed})")
+            
+            # Calculate TP levels based on SL distance and RR ratios
+            if direction == 'LONG':
+                tp1 = entry_price + (sl_distance * 3)   # 1:3 RR
+                tp2 = entry_price + (sl_distance * 5)   # 1:5 RR
+                tp3 = entry_price + (sl_distance * tier_config['max_rr']) if tier_config['tp3_mult'] else None
+            else:  # SHORT
+                tp1 = entry_price - (sl_distance * 3)   # 1:3 RR
+                tp2 = entry_price - (sl_distance * 5)   # 1:5 RR
+                tp3 = entry_price - (sl_distance * tier_config['max_rr']) if tier_config['tp3_mult'] else None
             
             max_rr = tier_config['max_rr']
             
-            # Determine trade type display
+            # Trade type display
+            direction_emoji = "🟢" if direction == "LONG" else "🔴"
             if rr_tier == "SWING":
-                trade_type = "🏹 SWING TRADE (1:10 RR)"
+                trade_type = f"{direction_emoji} SWING {direction} (1:10 RR)"
             elif rr_tier == "STANDARD":
-                trade_type = "📊 STANDARD TRADE (1:8 RR)"
+                trade_type = f"{direction_emoji} STANDARD {direction} (1:8 RR)"
             else:
-                trade_type = "⚡ SCALP TRADE (1:5 RR)"
+                trade_type = f"{direction_emoji} SCALP {direction} (1:5 RR)"
 
-            # Compile signal
+            # Compile signal with SMC data
             signal = {
                 'timestamp': datetime.now(),
                 'symbol': self.config.SYMBOL,
@@ -1255,6 +1749,7 @@ class TerminatorEngine:
                 'score': total_score,
                 'entry_price': entry_price,
                 'stop_loss': stop_loss,
+                'sl_distance': sl_distance,
                 'tp1': tp1,
                 'tp2': tp2,
                 'tp3': tp3,
@@ -1265,6 +1760,7 @@ class TerminatorEngine:
                 'entropy': market_entropy,
                 'adx': adx_value,
                 'hmm_bull_prob': hmm_probs['BULL'] * 100,
+                'hmm_bear_prob': hmm_probs['BEAR'] * 100,
                 'ai_confidence': ai_confidence,
                 'pattern_matches': pattern_matches,
                 'engines': {
@@ -1275,13 +1771,22 @@ class TerminatorEngine:
                 'active_engines': active_engines,
                 'external_data': external_data,
                 'funding_rate': funding_rate,
-                'obi': obi
+                'obi': obi,
+                # SMC DATA
+                'smc_bias': smc_bias,
+                'smc_structures': multi_tf_structures,
+                'fvg_zones': fvg_zones,
+                'swing_high': scalp_structure.get('last_swing_high'),
+                'swing_low': scalp_structure.get('last_swing_low')
             }
 
+            logger.info(f"✅ SIGNAL READY: {direction} @ ${entry_price:.2f} | SL ${stop_loss:.2f} | TP1 ${tp1:.2f}")
             return signal
 
         except Exception as e:
             logger.error(f"Market analysis error: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
     async def execute_trade(self, signal: Dict):
