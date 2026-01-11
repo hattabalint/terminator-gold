@@ -43,7 +43,7 @@ class Config:
     TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
     
     # Trading
-    PAPER_TRADING = os.environ.get('PAPER_TRADING', 'true').lower() == 'true'
+    PAPER_TRADING = True  # Paper trading mode (no real trades) - same as terminator_gold.py
     STARTING_BALANCE = float(os.environ.get('STARTING_BALANCE', '1000'))
     
     # ML Settings
