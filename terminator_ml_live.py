@@ -524,11 +524,11 @@ class TradingEngine:
                 return None
             
             # Determine trade type
-            # Use SPOT price from goldprice.org (NOT futures from yfinance)
+            # Use SPOT price from goldprice.org (Strict)
             spot_price = await self.price_fetcher.get_current_price()
             if spot_price is None:
-                logger.warning("Could not get spot price, using futures price")
-                spot_price = c[i]  # Fallback to futures
+                logger.warning("Could not get spot price, skipping signal check")
+                return None
             
             current_price = spot_price
             

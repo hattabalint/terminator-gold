@@ -1,20 +1,20 @@
 {
   "summary": {
     "starting_balance": 1000.0,
-    "ending_balance": 5742.1,
-    "total_profit_loss": 4742.1,
-    "profit_percent": 474.21,
-    "max_drawdown_percent": 32.55
+    "ending_balance": 77039.94,
+    "total_profit_loss": 76039.94,
+    "profit_percent": 7603.99,
+    "max_drawdown_percent": 71.65
   },
   "trade_stats": {
     "total_trades": 624,
     "wins": 168,
     "losses": 456,
     "win_rate_percent": 26.92,
-    "biggest_win": 360.49,
-    "biggest_loss": -58.04,
-    "average_win": 73.71,
-    "average_loss": -16.76,
+    "biggest_win": 10413.48,
+    "biggest_loss": -2395.1,
+    "average_win": 1025.83,
+    "average_loss": -211.18,
     "average_rr_on_wins": 3.85
   },
   "trade_types": {
@@ -36,5 +36,13 @@
     "TP3": 15,
     "SL": 456,
     "TIMEOUT": 0
+  },
+  "drawdown_analysis": {
+    "max_drawdown_percent": 71.65,
+    "peak_balance": 1000.0,
+    "bottom_balance": 283.51,
+    "trade_idx": 109,
+    "timestamp": "2025-04-03 20:00:00+00:00",
+    "max_losing_streak": 36
   }
 }

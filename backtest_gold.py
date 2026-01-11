@@ -79,6 +79,15 @@ class SMCBacktester:
         self.peak_balance = starting_balance
         self.max_drawdown = 0.0
         
+        # DRAWDOWN TRACKING
+        self.max_drawdown_trade_idx = 0
+        self.max_drawdown_peak = starting_balance
+        self.max_drawdown_bottom = starting_balance
+        self.balance_history = []  # Track balance after each trade
+        self.losing_streak = 0
+        self.max_losing_streak = 0
+        self.losing_streak_start_idx = 0
+        
         # SMC Config (matching main bot)
         self.zigzag_depth = 5
         self.zigzag_deviation = 0.001
@@ -464,14 +473,25 @@ class SMCBacktester:
             # Determine result
             if pnl_dollars > 0:
                 result = 'WIN'
+                self.losing_streak = 0  # Reset losing streak
             elif pnl_dollars < 0:
                 result = 'LOSS'
+                self.losing_streak += 1
+                if self.losing_streak > self.max_losing_streak:
+                    self.max_losing_streak = self.losing_streak
+                    self.losing_streak_start_idx = len(self.trades) - self.losing_streak + 1
             else:
                 result = 'BREAKEVEN'
             
             # Update balance
             self.current_balance += pnl_dollars
-            balance_history.append(self.current_balance)
+            self.balance_history.append({
+                'trade_idx': len(self.trades),
+                'balance': self.current_balance,
+                'pnl': pnl_dollars,
+                'result': result,
+                'timestamp': df['timestamp'].iloc[exit_idx]
+            })
             
             # Track max/min balance
             self.max_balance = max(self.max_balance, self.current_balance)
@@ -481,7 +501,14 @@ class SMCBacktester:
             if self.current_balance > self.peak_balance:
                 self.peak_balance = self.current_balance
             drawdown = (self.peak_balance - self.current_balance) / self.peak_balance * 100
-            self.max_drawdown = max(self.max_drawdown, drawdown)
+            
+            # Track when max drawdown occurs
+            if drawdown > self.max_drawdown:
+                self.max_drawdown = drawdown
+                self.max_drawdown_trade_idx = len(self.trades)
+                self.max_drawdown_peak = self.peak_balance
+                self.max_drawdown_bottom = self.current_balance
+                self.max_drawdown_timestamp = df['timestamp'].iloc[exit_idx]
             
             # Record trade
             trade = Trade(
@@ -581,6 +608,14 @@ class SMCBacktester:
                 "TP3": len([t for t in self.trades if t.exit_reason == 'TP3']),
                 "SL": len([t for t in self.trades if t.exit_reason == 'SL']),
                 "TIMEOUT": len([t for t in self.trades if t.exit_reason == 'TIMEOUT']),
+            },
+            "drawdown_analysis": {
+                "max_drawdown_percent": round(self.max_drawdown, 2),
+                "peak_balance": round(self.max_drawdown_peak, 2),
+                "bottom_balance": round(self.max_drawdown_bottom, 2),
+                "trade_idx": self.max_drawdown_trade_idx,
+                "timestamp": str(getattr(self, 'max_drawdown_timestamp', 'N/A')),
+                "max_losing_streak": self.max_losing_streak,
             }
         }
         
@@ -641,6 +676,19 @@ class SMCBacktester:
 • Timeout:              {e['TIMEOUT']}
 """)
         
+        # DRAWDOWN ANALYSIS
+        dd = stats.get("drawdown_analysis", {})
+        if dd:
+            print(f"""⚠️ DRAWDOWN ANALYSIS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Max Drawdown:         {dd.get('max_drawdown_percent', 0):.2f}%
+• Peak Balance:         ${dd.get('peak_balance', 0):.2f}
+• Bottom Balance:       ${dd.get('bottom_balance', 0):.2f}
+• When it occurred:     {dd.get('timestamp', 'N/A')}
+• Trade # when max DD:  #{dd.get('trade_idx', 0)}
+• Max Losing Streak:    {dd.get('max_losing_streak', 0)} trades in a row
+""")
+        
         print("="*60)
         print("🥇 TERMINATOR GOLD BACKTESTER COMPLETE 🥇")
         print("="*60 + "\n")
@@ -669,7 +717,7 @@ def main():
     # Initialize backtester
     backtester = SMCBacktester(
         starting_balance=1000.0,  # $1000 starting
-        risk_percent=1.0          # 1% risk per trade
+        risk_percent=3.0          # 3% risk per trade (compound)
     )
     
     # Run backtest
