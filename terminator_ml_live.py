@@ -134,7 +134,7 @@ class TelegramBot:
         rr = "1:3" if trade_type == "SCALP" else "1:5"
         
         message = f"""
-🥇 *ML SIGNAL* 🥇
+🥇 *Terminator Genesis GOLD Signal* 🥇
 ━━━━━━━━━━━━━━━━
 📍 XAU/USD | {emoji} *{direction}*
 💪 ML: *{ml_confidence:.0%}* | 📊 {trade_type}
@@ -690,7 +690,7 @@ class TradingEngine:
         
         # Cleanup
         await self.telegram.send_message(
-            f"🛑 *TERMINATOR ML LIVE STOPPED*\n"
+            f"🛑 *Terminator Genesis Signals Stopped*\n"
             f"Final Balance: ${self.balance:.2f}"
         )
         logger.info("🥇 Terminator ML Live shutdown complete")
