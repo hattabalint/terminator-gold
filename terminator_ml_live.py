@@ -524,7 +524,14 @@ class TradingEngine:
                 return None
             
             # Determine trade type
-            current_price = c[i]
+            # Use SPOT price from goldprice.org (NOT futures from yfinance)
+            spot_price = await self.price_fetcher.get_current_price()
+            if spot_price is None:
+                logger.warning("Could not get spot price, using futures price")
+                spot_price = c[i]  # Fallback to futures
+            
+            current_price = spot_price
+            
             if volatility[i] < 0.015:
                 trade_type = 'SCALP'
                 sl_dist = self.config.SCALP_SL
@@ -534,7 +541,7 @@ class TradingEngine:
                 sl_dist = self.config.NORMAL_SL
                 rr = self.config.NORMAL_RR
             
-            # Calculate levels with slippage
+            # Calculate levels with slippage (using SPOT price)
             slippage = random.uniform(self.config.SLIPPAGE_MIN, self.config.SLIPPAGE_MAX)
             
             if direction == 'LONG':
