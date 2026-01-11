@@ -63,7 +63,7 @@ class Config:
     
     # Data
     SYMBOL = "XAUUSD"
-    CHECK_INTERVAL = 60  # Check every 60 seconds
+    CHECK_INTERVAL = 30  # Check every 30 seconds
 
 
 # ==================== LOGGING ====================
