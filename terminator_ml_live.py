@@ -63,7 +63,8 @@ class Config:
     
     # Data
     SYMBOL = "XAUUSD"
-    CHECK_INTERVAL = 30  # Check every 30 seconds
+    CHECK_INTERVAL = 60  # Check every 60 seconds
+    SIGNAL_WINDOW_MINUTES = 5  # Only check for signals in first 5 mins of hour
 
 
 # ==================== LOGGING ====================
@@ -468,6 +469,10 @@ class TradingEngine:
             if df is None or len(df) < 60:
                 return None
             
+            # IMPORTANT: Drop last (incomplete) candle - use only CLOSED candles
+            # This matches backtest behavior exactly
+            df = df.iloc[:-1].reset_index(drop=True)
+            
             # Calculate indicators
             df['ema21'] = df['c'].ewm(span=21).mean()
             df['ema50'] = df['c'].ewm(span=50).mean()
@@ -667,7 +672,15 @@ class TradingEngine:
                         hours_since_close = (datetime.now() - self.last_trade_close).seconds / 3600
                         if hours_since_close < self.config.COOLDOWN_HOURS:
                             logger.debug(f"⏳ Cooldown: {self.config.COOLDOWN_HOURS - hours_since_close:.1f}h remaining")
+                            await asyncio.sleep(self.config.CHECK_INTERVAL)
                             continue
+                    
+                    # ONLY check for signals at start of hour (match backtest)
+                    current_minute = datetime.now().minute
+                    if current_minute > self.config.SIGNAL_WINDOW_MINUTES:
+                        # Not in signal window, just monitor
+                        await asyncio.sleep(self.config.CHECK_INTERVAL)
+                        continue
                     
                     signal = await self.check_for_signal()
                     
