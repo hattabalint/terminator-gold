@@ -458,6 +458,22 @@ class TradingEngine:
     async def check_for_signal(self) -> Optional[Dict]:
         """Check if there's a valid trade signal"""
         try:
+            # Check if market is open (XAUUSD trades Sun 22:00 - Fri 22:00 UTC)
+            now = datetime.utcnow()
+            weekday = now.weekday()  # 0=Mon, 4=Fri, 5=Sat, 6=Sun
+            hour = now.hour
+            
+            # Market closed: Friday 22:00 UTC - Sunday 22:00 UTC
+            is_market_closed = (
+                (weekday == 4 and hour >= 22) or  # Friday after 22:00
+                (weekday == 5) or                  # Saturday (all day)
+                (weekday == 6 and hour < 22)       # Sunday before 22:00
+            )
+            
+            if is_market_closed:
+                logger.info("🚫 Market closed (weekend) - no signals")
+                return None
+            
             # Check news blackout
             is_blackout, event = await self.news_filter.is_news_blackout()
             if is_blackout:
