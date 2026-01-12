@@ -236,45 +236,52 @@ class PriceFetcher:
         self.last_update = None
     
     async def get_current_price(self) -> Optional[float]:
-        """Get current XAU/USD spot price"""
-        try:
-            # Try goldprice.org API first
-            async with aiohttp.ClientSession() as session:
-                # Primary: goldprice.org
-                url = "https://data-asg.goldprice.org/dbXRates/USD"
-                headers = {"Accept": "application/json"}
-                
-                async with session.get(url, headers=headers) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        price = data.get('items', [{}])[0].get('xauPrice')
-                        if price:
-                            self.last_price = float(price)
-                            self.last_update = datetime.now()
-                            return self.last_price
-            
-            # Fallback: yfinance
-            ticker = yf.Ticker("GC=F")
-            data = ticker.history(period="1d", interval="1m")
-            if not data.empty:
-                self.last_price = float(data['Close'].iloc[-1])
-                self.last_update = datetime.now()
-                return self.last_price
-                
-        except Exception as e:
-            logger.error(f"Price fetch error: {e}")
+        """Get current XAU/USD SPOT price from goldprice.org ONLY"""
+        url = "https://data-asg.goldprice.org/dbXRates/USD"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json"
+        }
         
-        return self.last_price  # Return cached price if fetch fails
+        # Retry logic: 3 attempts
+        for attempt in range(3):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, headers=headers, timeout=10) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            price = data.get('items', [{}])[0].get('xauPrice')
+                            if price:
+                                self.last_price = float(price)
+                                self.last_update = datetime.now()
+                                return self.last_price
+                        else:
+                            logger.warning(f"GoldPrice API error: {resp.status} (Attempt {attempt+1}/3)")
+            except Exception as e:
+                logger.warning(f"Price fetch attempt {attempt+1} failed: {e}")
+            
+            await asyncio.sleep(1)
+        
+        # NO FALLBACK TO FUTURES - strict spot only
+        logger.error("Could not get SPOT price after 3 attempts")
+        return self.last_price  # Return cached price if all retries fail
     
     async def get_ohlc_data(self, period: str = "1d", interval: str = "1h") -> Optional[pd.DataFrame]:
-        """Get OHLC data for analysis"""
+        """Get OHLC data for ML analysis - uses GC=F for historical patterns (model was trained on this)"""
         try:
-            ticker = yf.Ticker("GC=F")  # Using futures as proxy (moves with spot)
-            df = ticker.history(period=period, interval=interval)
+            # NOTE: We use GC=F for OHLC patterns (model training data) but SPOT for actual entry/SL/TP
+            loop = asyncio.get_event_loop()
+            df = await loop.run_in_executor(
+                None,
+                lambda: yf.download('GC=F', period=period, interval=interval, progress=False)
+            )
             if not df.empty:
                 df = df.reset_index()
-                df.columns = ['ts', 'o', 'h', 'l', 'c', 'v', 'dividends', 'splits']
-                df = df[['ts', 'o', 'h', 'l', 'c', 'v']]
+                if len(df.columns) == 7:
+                    df.columns = ['ts', 'o', 'h', 'l', 'c', 'ac', 'v']
+                    df = df.drop('ac', axis=1)
+                else:
+                    df.columns = ['ts', 'o', 'h', 'l', 'c', 'v']
                 return df
         except Exception as e:
             logger.error(f"OHLC fetch error: {e}")
