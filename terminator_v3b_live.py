@@ -548,20 +548,28 @@ class V3BTradingEngine:
                 logger.info(f"📰 News blackout: {event}")
                 return None
             
-            # Get OHLC data
-            df = yf.download('GC=F', period='10d', interval='1h', progress=False)
-            if df.empty or len(df) < 100:
-                return None
+            # Get OHLC data - USE SPOT CSV + RECENT DATA, NOT GC=F FUTURES!
+            import os
+            csv_path = os.path.join(os.path.dirname(__file__), 'xauusd_1h_2025_spot.csv')
             
-            df = df.reset_index()
-            if len(df.columns) == 7:
-                df.columns = ['ts', 'o', 'h', 'l', 'c', 'ac', 'v']
-                df = df.drop('ac', axis=1)
+            if os.path.exists(csv_path):
+                df = pd.read_csv(csv_path, parse_dates=['datetime'])
+                df.columns = ['ts', 'o', 'h', 'l', 'c']
+                # Use last 200 candles for signal generation
+                df = df.tail(200).reset_index(drop=True)
             else:
-                df.columns = ['ts', 'o', 'h', 'l', 'c', 'v']
+                # Fallback to GitHub if local not available
+                csv_url = "https://raw.githubusercontent.com/hattabalint/terminator-gold/main/xauusd_1h_2025_spot.csv"
+                try:
+                    df = pd.read_csv(csv_url, parse_dates=['datetime'])
+                    df.columns = ['ts', 'o', 'h', 'l', 'c']
+                    df = df.tail(200).reset_index(drop=True)
+                except:
+                    logger.error("Could not load SPOT OHLC data")
+                    return None
             
-            # Drop incomplete candle
-            df = df.iloc[:-1].reset_index(drop=True)
+            if len(df) < 100:
+                return None
             
             # Calculate indicators
             df = self.model.calculate_indicators(df)
