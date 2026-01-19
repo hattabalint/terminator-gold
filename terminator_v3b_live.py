@@ -373,20 +373,27 @@ class V3BModel:
             return None, None
     
     async def train(self):
-        """Train model on historical data - EXACT from backtest"""
+        """Train model on historical data - USING SPOT CSV (exact backtest data)"""
         logger.info("🤖 Training V3B model (27 features, RF+GB)...")
         
         try:
-            # Download training data (2020-2024)
-            df = yf.download('GC=F', start='2020-01-01', end='2024-12-31', 
-                           interval='1h', progress=False)
-            df = df.reset_index()
+            # Use LOCAL SPOT CSV file (same as backtest) - NOT Yahoo Finance futures!
+            import os
+            csv_path = os.path.join(os.path.dirname(__file__), 'xauusd_1h_2020_2024_spot.csv')
             
-            if len(df.columns) == 7:
-                df.columns = ['ts', 'o', 'h', 'l', 'c', 'ac', 'v']
-                df = df.drop('ac', axis=1)
+            if os.path.exists(csv_path):
+                logger.info(f"📊 Loading SPOT training data from: {csv_path}")
+                df = pd.read_csv(csv_path, parse_dates=['datetime'])
+                df.columns = ['ts', 'o', 'h', 'l', 'c']
             else:
-                df.columns = ['ts', 'o', 'h', 'l', 'c', 'v']
+                # Fallback: try to download from remote (if CSV uploaded to GitHub)
+                logger.warning("⚠️ Local CSV not found, trying remote...")
+                csv_url = "https://raw.githubusercontent.com/hattabalint/terminator-gold/main/xauusd_1h_2020_2024_spot.csv"
+                df = pd.read_csv(csv_url, parse_dates=['datetime'])
+                df.columns = ['ts', 'o', 'h', 'l', 'c']
+            
+            logger.info(f"📊 Loaded {len(df)} SPOT candles for training")
+
             
             # Calculate indicators
             df = self.calculate_indicators(df)
