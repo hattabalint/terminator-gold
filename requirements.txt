@@ -9,3 +9,4 @@ aiosqlite
 flask
 aiohttp
 scikit-learn
+hmmlearn
