@@ -248,7 +248,70 @@ class PriceFetcher:
         return self.last_price
 
 
-# ==================== V3B ML MODEL (27 FEATURES) ====================
+# ==================== CANDLE COLLECTOR (Auto-save new SPOT candles) ====================
+class CandleCollector:
+    """Automatically collect hourly SPOT candles for training"""
+    
+    def __init__(self, price_fetcher: PriceFetcher):
+        self.price_fetcher = price_fetcher
+        self.current_candle = {'o': None, 'h': None, 'l': None, 'c': None, 'ts': None}
+        self.last_saved_hour = None
+        
+    async def update(self):
+        """Call this every minute to build hourly candles"""
+        price = await self.price_fetcher.get_current_price()
+        if price is None:
+            return
+        
+        now = datetime.now()
+        current_hour = now.replace(minute=0, second=0, microsecond=0)
+        
+        # New hour started - save previous candle and start new one
+        if self.current_candle['ts'] is not None and current_hour > self.current_candle['ts']:
+            await self._save_candle()
+            self._start_new_candle(current_hour, price)
+        elif self.current_candle['ts'] is None:
+            self._start_new_candle(current_hour, price)
+        else:
+            # Update current candle
+            self.current_candle['h'] = max(self.current_candle['h'], price)
+            self.current_candle['l'] = min(self.current_candle['l'], price)
+            self.current_candle['c'] = price
+    
+    def _start_new_candle(self, ts, price):
+        self.current_candle = {
+            'ts': ts,
+            'o': price,
+            'h': price,
+            'l': price,
+            'c': price
+        }
+        logger.debug(f"🕐 Started new candle at {ts}")
+    
+    async def _save_candle(self):
+        """Save completed candle to CSV"""
+        if self.current_candle['ts'] is None:
+            return
+        
+        import os
+        csv_path = os.path.join(os.path.dirname(__file__), 'new_candles_2026.csv')
+        
+        candle_df = pd.DataFrame([{
+            'datetime': self.current_candle['ts'],
+            'open': self.current_candle['o'],
+            'high': self.current_candle['h'],
+            'low': self.current_candle['l'],
+            'close': self.current_candle['c']
+        }])
+        
+        if os.path.exists(csv_path):
+            candle_df.to_csv(csv_path, mode='a', header=False, index=False)
+        else:
+            candle_df.to_csv(csv_path, index=False)
+        
+        logger.info(f"📊 Saved candle: {self.current_candle['ts']} O={self.current_candle['o']:.2f} H={self.current_candle['h']:.2f} L={self.current_candle['l']:.2f} C={self.current_candle['c']:.2f}")
+
+
 class V3BModel:
     """V3B ML Model - EXACT backtest logic"""
     
@@ -373,26 +436,46 @@ class V3BModel:
             return None, None
     
     async def train(self):
-        """Train model on historical data - USING SPOT CSV (exact backtest data)"""
+        """Train model on SPOT CSV + auto-collected new candles"""
         logger.info("🤖 Training V3B model (27 features, RF+GB)...")
         
         try:
-            # Use LOCAL SPOT CSV file (same as backtest) - NOT Yahoo Finance futures!
             import os
-            csv_path = os.path.join(os.path.dirname(__file__), 'xauusd_1h_2020_2024_spot.csv')
             
-            if os.path.exists(csv_path):
-                logger.info(f"📊 Loading SPOT training data from: {csv_path}")
-                df = pd.read_csv(csv_path, parse_dates=['datetime'])
-                df.columns = ['ts', 'o', 'h', 'l', 'c']
+            # 1. Load BASE training data (2020-2025)
+            base_csv = os.path.join(os.path.dirname(__file__), 'xauusd_1h_2020_2025_spot.csv')
+            
+            if os.path.exists(base_csv):
+                logger.info(f"📊 Loading BASE training data: {base_csv}")
+                df_base = pd.read_csv(base_csv, parse_dates=['datetime'])
+                df_base.columns = ['ts', 'o', 'h', 'l', 'c']
             else:
-                # Fallback: try to download from remote (if CSV uploaded to GitHub)
-                logger.warning("⚠️ Local CSV not found, trying remote...")
-                csv_url = "https://raw.githubusercontent.com/hattabalint/terminator-gold/main/xauusd_1h_2020_2024_spot.csv"
-                df = pd.read_csv(csv_url, parse_dates=['datetime'])
-                df.columns = ['ts', 'o', 'h', 'l', 'c']
+                # Try GitHub
+                logger.warning("⚠️ Local CSV not found, trying GitHub...")
+                csv_url = "https://raw.githubusercontent.com/hattabalint/terminator-gold/main/xauusd_1h_2020_2025_spot.csv"
+                df_base = pd.read_csv(csv_url, parse_dates=['datetime'])
+                df_base.columns = ['ts', 'o', 'h', 'l', 'c']
             
-            logger.info(f"📊 Loaded {len(df)} SPOT candles for training")
+            logger.info(f"📊 Base data: {len(df_base)} candles (2020-2025)")
+            
+            # 2. Load AUTO-COLLECTED new candles (2026+) if exists
+            new_candles_csv = os.path.join(os.path.dirname(__file__), 'new_candles_2026.csv')
+            
+            if os.path.exists(new_candles_csv):
+                df_new = pd.read_csv(new_candles_csv, parse_dates=['datetime'])
+                df_new.columns = ['ts', 'o', 'h', 'l', 'c']
+                logger.info(f"📊 New candles (2026): {len(df_new)} candles")
+                
+                # Combine base + new
+                df = pd.concat([df_base, df_new], ignore_index=True)
+                df = df.drop_duplicates(subset=['ts']).reset_index(drop=True)
+                logger.info(f"📊 Combined training data: {len(df)} candles")
+            else:
+                df = df_base
+                logger.info("📊 No new 2026 candles yet, using base only")
+            
+            logger.info(f"📊 Total training candles: {len(df)}")
+
 
             
             # Calculate indicators
@@ -484,6 +567,7 @@ class V3BTradingEngine:
         self.telegram = TelegramBot(config.TELEGRAM_TOKEN, config.TELEGRAM_CHAT_ID)
         self.news_filter = NewsFilter()
         self.price_fetcher = PriceFetcher()
+        self.candle_collector = CandleCollector(self.price_fetcher)  # Auto-collect SPOT candles
         self.model = V3BModel(config)
         
         self.balance = config.STARTING_BALANCE
@@ -548,25 +632,37 @@ class V3BTradingEngine:
                 logger.info(f"📰 News blackout: {event}")
                 return None
             
-            # Get OHLC data - USE SPOT CSV + RECENT DATA, NOT GC=F FUTURES!
+            # Get OHLC data - USE SPOT CSV + COLLECTED 2026 CANDLES
             import os
-            csv_path = os.path.join(os.path.dirname(__file__), 'xauusd_1h_2025_spot.csv')
             
-            if os.path.exists(csv_path):
-                df = pd.read_csv(csv_path, parse_dates=['datetime'])
-                df.columns = ['ts', 'o', 'h', 'l', 'c']
-                # Use last 200 candles for signal generation
-                df = df.tail(200).reset_index(drop=True)
+            # Load base 2025 data
+            base_csv = os.path.join(os.path.dirname(__file__), 'xauusd_1h_2025_spot.csv')
+            new_csv = os.path.join(os.path.dirname(__file__), 'new_candles_2026.csv')
+            
+            if os.path.exists(base_csv):
+                df_base = pd.read_csv(base_csv, parse_dates=['datetime'])
+                df_base.columns = ['ts', 'o', 'h', 'l', 'c']
             else:
-                # Fallback to GitHub if local not available
+                # Try GitHub
                 csv_url = "https://raw.githubusercontent.com/hattabalint/terminator-gold/main/xauusd_1h_2025_spot.csv"
                 try:
-                    df = pd.read_csv(csv_url, parse_dates=['datetime'])
-                    df.columns = ['ts', 'o', 'h', 'l', 'c']
-                    df = df.tail(200).reset_index(drop=True)
+                    df_base = pd.read_csv(csv_url, parse_dates=['datetime'])
+                    df_base.columns = ['ts', 'o', 'h', 'l', 'c']
                 except:
                     logger.error("Could not load SPOT OHLC data")
                     return None
+            
+            # Add new 2026 collected candles if they exist
+            if os.path.exists(new_csv):
+                df_new = pd.read_csv(new_csv, parse_dates=['datetime'])
+                df_new.columns = ['ts', 'o', 'h', 'l', 'c']
+                df = pd.concat([df_base, df_new], ignore_index=True)
+                df = df.drop_duplicates(subset=['ts']).reset_index(drop=True)
+            else:
+                df = df_base
+            
+            # Use last 200 candles for indicators
+            df = df.tail(200).reset_index(drop=True)
             
             if len(df) < 100:
                 return None
@@ -756,6 +852,9 @@ class V3BTradingEngine:
                 if current_hour != self._last_hour:
                     self.bar_count += 1
                     self._last_hour = current_hour
+                
+                # Collect SPOT candle (every minute)
+                await self.candle_collector.update()
                 
                 # Monitor position
                 await self.monitor_position()
