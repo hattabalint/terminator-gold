@@ -605,24 +605,24 @@ class V3BSafeModel:
     
     async def train(self):
         """Train model on SPOT CSV + auto-collected new candles"""
-        logger.info("🤖 Training V3B SAFE model (27 features, RF+GB)...")
+        logger.info("Training V3B SAFE model (27 features, RF+GB)...")
         
         try:
             # 1. Load BASE training data (2020-2025)
             base_csv = os.path.join(os.path.dirname(__file__), 'xauusd_1h_2020_2025_spot.csv')
             
             if os.path.exists(base_csv):
-                logger.info(f"📊 Loading BASE training data: {base_csv}")
+                logger.info(f"Loading BASE training data: {base_csv}")
                 df_base = pd.read_csv(base_csv, parse_dates=['datetime'])
                 df_base.columns = ['ts', 'o', 'h', 'l', 'c']
             else:
                 # Try GitHub
-                logger.warning("⚠️ Local CSV not found, trying GitHub...")
+                logger.warning("Local CSV not found, trying GitHub...")
                 csv_url = "https://raw.githubusercontent.com/hattabalint/terminatorjanos/main/xauusd_1h_2020_2025_spot.csv"
                 df_base = pd.read_csv(csv_url, parse_dates=['datetime'])
                 df_base.columns = ['ts', 'o', 'h', 'l', 'c']
             
-            logger.info(f"📊 Base data: {len(df_base)} candles (2020-2025)")
+            logger.info(f"Base data: {len(df_base)} candles (2020-2025)")
             
             # 2. Load AUTO-COLLECTED new candles (2026+) if exists
             new_candles_csv = os.path.join(os.path.dirname(__file__), 'new_candles_2026.csv')
@@ -630,30 +630,25 @@ class V3BSafeModel:
             if os.path.exists(new_candles_csv):
                 df_new = pd.read_csv(new_candles_csv, parse_dates=['datetime'])
                 df_new.columns = ['ts', 'o', 'h', 'l', 'c']
-                logger.info(f"📊 New candles (2026): {len(df_new)} candles")
+                logger.info(f"New candles (2026): {len(df_new)} candles")
                 
                 # Combine base + new
                 df = pd.concat([df_base, df_new], ignore_index=True)
                 df = df.drop_duplicates(subset=['ts']).reset_index(drop=True)
-                logger.info(f"📊 Combined training data: {len(df)} candles")
+                logger.info(f"Combined training data: {len(df)} candles")
             else:
                 df = df_base
-                logger.info("📊 No new 2026 candles yet, using base only")
+                logger.info("No new 2026 candles yet, using base only")
             
-            logger.info(f"📊 Total training candles: {len(df)}")
+            logger.info(f"Total training candles: {len(df)}")
             
             # Calculate indicators
-            logger.info("⏳ Step 1/5: Calculating indicators...")
             df = self.calculate_indicators(df)
-            logger.info("✅ Step 1/5: Indicators calculated")
             
-            # Train HMM - FULL 100 iterations
-            logger.info("⏳ Step 2/5: Fitting HMM model...")
+            # Train HMM
             returns = df['c'].pct_change().dropna().values.reshape(-1, 1)
             self.hmm_model = hmm.GaussianHMM(n_components=3, covariance_type="full", n_iter=100, random_state=42)
             self.hmm_model.fit(returns[:5000])
-            logger.info("✅ Step 2/5: HMM fitted")
-            
             regimes = self.hmm_model.predict(returns)
             df['regime'] = pd.Series([np.nan] + list(regimes), index=df.index)
             
@@ -665,11 +660,8 @@ class V3BSafeModel:
             
             df = df.iloc[250:].reset_index(drop=True)
             
-            # Extract features and labels - FULL DATASET
-            logger.info(f"⏳ Step 3/5: Extracting features from {len(df)} candles (this takes 3-5 min)...")
+            # Extract features and labels
             X, y = [], []
-            total = len(df) - 100
-            
             for i in range(50, len(df) - 50):
                 f, d = self.get_27_features(df, i)
                 if f is None:
@@ -677,7 +669,7 @@ class V3BSafeModel:
                 
                 a = df['atr'].iloc[i]
                 c = df['c'].iloc[i]
-                sl = a * 1.0
+                sl = a * 1.0  # Training uses 1.0 ATR
                 tp = sl * 3.0
                 
                 label = 0
@@ -692,29 +684,23 @@ class V3BSafeModel:
                 X.append(f)
                 y.append(label)
             
-            logger.info(f"✅ Step 3/5: Features extracted: {len(X)} samples")
-            
             X, y = np.array(X), np.array(y)
             X_scaled = self.scaler.fit_transform(X)
             
             # Train RF + GB
-            logger.info("⏳ Step 4/5: Training Random Forest...")
             self.rf = RandomForestClassifier(
                 n_estimators=100, max_depth=8, 
                 class_weight='balanced', random_state=42, n_jobs=-1
             )
-            self.rf.fit(X_scaled, y)
-            logger.info("✅ Step 4/5: Random Forest trained")
-            
-            logger.info("⏳ Step 5/5: Training Gradient Boosting...")
             self.gb = GradientBoostingClassifier(
                 n_estimators=80, max_depth=5, random_state=42
             )
+            
+            self.rf.fit(X_scaled, y)
             self.gb.fit(X_scaled, y)
-            logger.info("✅ Step 5/5: Gradient Boosting trained")
             
             self.last_train = datetime.now()
-            logger.info(f"🎉 V3B SAFE Model trained on {len(X)} samples - READY!")
+            logger.info(f"V3B SAFE Model trained on {len(X)} samples - READY!")
             return True
             
         except Exception as e:
