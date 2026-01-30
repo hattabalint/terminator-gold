@@ -10,3 +10,4 @@ flask
 aiohttp
 scikit-learn
 hmmlearn
+MetaTrader5

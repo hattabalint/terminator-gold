@@ -38,6 +38,7 @@ from flask import Flask
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.preprocessing import StandardScaler
 from hmmlearn import hmm
+import MetaTrader5 as mt5
 
 # Windows encoding fix
 if sys.platform == 'win32':
@@ -52,6 +53,17 @@ class Config:
     # Trading
     PAPER_TRADING = True  # Paper trading mode
     STARTING_BALANCE = float(os.environ.get('STARTING_BALANCE', '1000'))
+    
+    # ===== MT5 SETTINGS =====
+    USE_MT5 = True  # Enable MT5 real trading (runs ALONGSIDE paper trading)
+    MT5_LOGIN = int(os.environ.get('MT5_LOGIN', '0'))  # MT5 account number
+    MT5_PASSWORD = os.environ.get('MT5_PASSWORD', '')  # MT5 password
+    MT5_SERVER = os.environ.get('MT5_SERVER', '')  # MT5 server
+    MT5_SYMBOL = "XAUUSD"  # MT5 symbol for Gold
+    MT5_RISK_PERCENT = 0.01  # MT5 uses 1% risk (paper trading keeps 3%)
+    MT5_MIN_LOT = 0.01  # Minimum lot size
+    MT5_MAX_LOT = 10.0  # Maximum lot size for safety
+    EMERGENCY_SL_DISTANCE = 1.0  # Emergency SL is $1 below/above normal SL
     
     # ===== V3B EXACT SETTINGS =====
     ML_THRESHOLD = 0.455    # EXACT from backtest
@@ -214,6 +226,272 @@ class NewsFilter:
             if blackout_start <= now <= blackout_end:
                 return True, event['title']
         return False, None
+
+
+# ==================== MT5 TRADER ====================
+class MT5Trader:
+    """MT5 Real Trading with Emergency Stop Loss"""
+    
+    def __init__(self, config: Config):
+        self.config = config
+        self.initialized = False
+        self.mt5_position_ticket = None
+    
+    def calculate_lot_size(self, signal: Dict, account_balance: float) -> float:
+        """Calculate lot size based on 1% risk and SL distance"""
+        try:
+            # Risk amount: 1% of balance
+            risk_amount = account_balance * self.config.MT5_RISK_PERCENT
+            
+            # SL distance in USD
+            sl_distance = abs(signal['entry'] - signal['sl'])
+            
+            if sl_distance <= 0:
+                logger.error("Invalid SL distance, using minimum lot")
+                return self.config.MT5_MIN_LOT
+            
+            # For XAUUSD: 0.01 lot = 1 oz gold
+            # If price moves $1 with 0.01 lot (1 oz), P/L = $1
+            # Therefore: lot_size = risk_amount / sl_distance * 0.01
+            lot_size = (risk_amount / sl_distance) * 0.01
+            
+            # Round to 2 decimal places (standard for most brokers)
+            lot_size = round(lot_size, 2)
+            
+            # Apply min/max limits
+            lot_size = max(self.config.MT5_MIN_LOT, min(lot_size, self.config.MT5_MAX_LOT))
+            
+            logger.info(
+                f"📊 MT5 Lot Calculation: Balance=${account_balance:.2f}, "
+                f"Risk 1%=${risk_amount:.2f}, SL dist=${sl_distance:.2f}, "
+                f"Lot={lot_size:.2f}"
+            )
+            
+            return lot_size
+            
+        except Exception as e:
+            logger.error(f"Lot size calculation error: {e}")
+            return self.config.MT5_MIN_LOT
+    
+    async def initialize(self) -> bool:
+        """Initialize MT5 connection"""
+        if not self.config.USE_MT5:
+            logger.info("📊 MT5 disabled in config")
+            return False
+        
+        if not self.config.MT5_LOGIN or not self.config.MT5_PASSWORD or not self.config.MT5_SERVER:
+            logger.warning("⚠️ MT5 credentials not configured, skipping MT5")
+            return False
+        
+        try:
+            if not mt5.initialize():
+                logger.error(f"MT5 initialization failed: {mt5.last_error()}")
+                return False
+            
+            # Login
+            authorized = mt5.login(
+                login=self.config.MT5_LOGIN,
+                password=self.config.MT5_PASSWORD,
+                server=self.config.MT5_SERVER
+            )
+            
+            if not authorized:
+                logger.error(f"MT5 login failed: {mt5.last_error()}")
+                mt5.shutdown()
+                return False
+            
+            account_info = mt5.account_info()
+            if account_info is None:
+                logger.error("Failed to get MT5 account info")
+                mt5.shutdown()
+                return False
+            
+            self.initialized = True
+            logger.info(f"✅ MT5 Connected - Account: {account_info.login}, Balance: ${account_info.balance:.2f}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"MT5 initialization error: {e}")
+            return False
+    
+    async def open_position(self, signal: Dict) -> bool:
+        """Open MT5 position with EMERGENCY STOP LOSS and 1% RISK"""
+        if not self.initialized:
+            logger.warning("MT5 not initialized, skipping real trade")
+            return False
+        
+        try:
+            symbol = self.config.MT5_SYMBOL
+            
+            # Get current account balance
+            account_info = mt5.account_info()
+            if account_info is None:
+                logger.error("Failed to get MT5 account info")
+                return False
+            
+            # Calculate lot size based on 1% risk
+            lot = self.calculate_lot_size(signal, account_info.balance)
+            
+            # Check if symbol is available
+            symbol_info = mt5.symbol_info(symbol)
+            if symbol_info is None:
+                logger.error(f"Symbol {symbol} not found in MT5")
+                return False
+            
+            if not symbol_info.visible:
+                if not mt5.symbol_select(symbol, True):
+                    logger.error(f"Failed to select symbol {symbol}")
+                    return False
+            
+            # Get current price
+            tick = mt5.symbol_info_tick(symbol)
+            if tick is None:
+                logger.error(f"Failed to get tick for {symbol}")
+                return False
+            
+            # Determine order type and prices
+            is_long = signal['direction'] == 'LONG'
+            
+            if is_long:
+                order_type = mt5.ORDER_TYPE_BUY
+                price = tick.ask
+                # Emergency SL is $1 BELOW the normal SL
+                emergency_sl = signal['sl'] - self.config.EMERGENCY_SL_DISTANCE
+                tp = signal['tp']
+            else:
+                order_type = mt5.ORDER_TYPE_SELL
+                price = tick.bid
+                # Emergency SL is $1 ABOVE the normal SL (for short)
+                emergency_sl = signal['sl'] + self.config.EMERGENCY_SL_DISTANCE
+                tp = signal['tp']
+            
+            # Prepare order request
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": symbol,
+                "volume": lot,
+                "type": order_type,
+                "price": price,
+                "sl": emergency_sl,  # EMERGENCY STOP LOSS - server-side protection!
+                "tp": tp,
+                "deviation": 20,
+                "magic": 234000,  # Magic number to identify our trades
+                "comment": f"V3B_{signal['direction']}_ML{signal['ml_confidence']:.2f}",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+            
+            # Send order
+            result = mt5.order_send(request)
+            
+            if result is None:
+                logger.error(f"MT5 order_send failed: {mt5.last_error()}")
+                return False
+            
+            if result.retcode != mt5.TRADE_RETCODE_DONE:
+                logger.error(f"MT5 order failed: {result.retcode} - {result.comment}")
+                return False
+            
+            self.mt5_position_ticket = result.order
+            
+            logger.info(
+                f"✅ MT5 Position Opened: {signal['direction']} {lot} lots @ ${price:.2f} | "
+                f"Emergency SL: ${emergency_sl:.2f} (Normal SL: ${signal['sl']:.2f}, -${self.config.EMERGENCY_SL_DISTANCE}) | "
+                f"TP: ${tp:.2f} | Ticket: {result.order}"
+            )
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"MT5 position open error: {e}")
+            return False
+    
+    async def close_position(self) -> bool:
+        """Close MT5 position manually"""
+        if not self.initialized or self.mt5_position_ticket is None:
+            return False
+        
+        try:
+            # Get position info
+            positions = mt5.positions_get(ticket=self.mt5_position_ticket)
+            
+            if positions is None or len(positions) == 0:
+                logger.info("MT5 position already closed")
+                self.mt5_position_ticket = None
+                return True
+            
+            position = positions[0]
+            
+            # Prepare close request
+            tick = mt5.symbol_info_tick(position.symbol)
+            if tick is None:
+                logger.error("Failed to get tick for closing")
+                return False
+            
+            if position.type == mt5.ORDER_TYPE_BUY:
+                order_type = mt5.ORDER_TYPE_SELL
+                price = tick.bid
+            else:
+                order_type = mt5.ORDER_TYPE_BUY
+                price = tick.ask
+            
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": position.symbol,
+                "volume": position.volume,
+                "type": order_type,
+                "position": position.ticket,
+                "price": price,
+                "deviation": 20,
+                "magic": 234000,
+                "comment": "V3B_Close",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+            
+            result = mt5.order_send(request)
+            
+            if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+                logger.error(f"MT5 close failed: {result}")
+                return False
+            
+            logger.info(f"✅ MT5 Position Closed @ ${price:.2f}")
+            self.mt5_position_ticket = None
+            return True
+            
+        except Exception as e:
+            logger.error(f"MT5 close error: {e}")
+            return False
+    
+    async def check_position_status(self) -> Optional[str]:
+        """Check if MT5 position hit TP/SL/still open"""
+        if not self.initialized or self.mt5_position_ticket is None:
+            return None
+        
+        try:
+            positions = mt5.positions_get(ticket=self.mt5_position_ticket)
+            
+            if positions is None or len(positions) == 0:
+                # Position closed - check last deal to see if it was TP or SL
+                deals = mt5.history_deals_get(ticket=self.mt5_position_ticket)
+                if deals and len(deals) > 0:
+                    # Position was closed
+                    self.mt5_position_ticket = None
+                    return "CLOSED"
+                return "CLOSED"
+            
+            # Position still open
+            return "OPEN"
+            
+        except Exception as e:
+            logger.error(f"MT5 status check error: {e}")
+            return None
+    
+    def shutdown(self):
+        """Shutdown MT5 connection"""
+        if self.initialized:
+            mt5.shutdown()
+            logger.info("MT5 connection closed")
 
 
 # ==================== PRICE FETCHER ====================
@@ -569,6 +847,7 @@ class V3BTradingEngine:
         self.price_fetcher = PriceFetcher()
         self.candle_collector = CandleCollector(self.price_fetcher)  # Auto-collect SPOT candles
         self.model = V3BModel(config)
+        self.mt5_trader = MT5Trader(config)  # MT5 real trading
         
         self.balance = config.STARTING_BALANCE
         self.peak_balance = config.STARTING_BALANCE
@@ -580,15 +859,25 @@ class V3BTradingEngine:
     async def initialize(self):
         logger.info("🥇 Initializing Terminator V3B Live...")
         
+        # Initialize MT5
+        mt5_status = await self.mt5_trader.initialize()
+        if mt5_status:
+            logger.info("✅ MT5 Trading enabled with Emergency Stop Loss protection")
+        else:
+            logger.info("📄 MT5 disabled - Paper trading only")
+        
         await self.model.train()
         await self.news_filter.update_calendar()
         
         mode = "📄 PAPER" if self.config.PAPER_TRADING else "💰 LIVE"
+        mt5_mode = "+ 🔥 MT5 REAL" if mt5_status else ""
+        
         await self.telegram.send_message(
             f"🥇 *TERMINATOR V3B LIVE STARTED* 🥇\n"
             f"━━━━━━━━━━━━━━━━\n"
-            f"Mode: {mode}\n"
+            f"Mode: {mode} {mt5_mode}\n"
             f"Balance: ${self.balance:.2f}\n"
+            f"MT5 Emergency SL: ${self.config.EMERGENCY_SL_DISTANCE} below normal SL\n"
             f"Config: ML={self.config.ML_THRESHOLD}, SL={self.config.SL_MULTIPLIER}×ATR, RR=1:3\n"
             f"Model: ✅ RF+GB (27 features)"
         )
@@ -728,7 +1017,7 @@ class V3BTradingEngine:
             return None
     
     async def open_position(self, signal: Dict):
-        """Open V3B position"""
+        """Open V3B position (Paper + MT5)"""
         risk_pct = self.get_adaptive_risk()
         risk_amt = self.balance * risk_pct
         
@@ -746,6 +1035,14 @@ class V3BTradingEngine:
         
         logger.info(f"📈 OPENED {signal['direction']} @ ${signal['entry']:.2f}")
         
+        # Open MT5 position with Emergency SL
+        if self.mt5_trader.initialized:
+            mt5_success = await self.mt5_trader.open_position(signal)
+            if mt5_success:
+                logger.info("🔥 MT5 Real position opened with Emergency SL protection")
+            else:
+                logger.warning("⚠️ MT5 position failed to open")
+        
         await self.telegram.send_signal(
             direction=signal['direction'],
             ml_confidence=signal['ml_confidence'],
@@ -757,7 +1054,7 @@ class V3BTradingEngine:
         )
     
     async def monitor_position(self):
-        """Monitor position for TP/SL"""
+        """Monitor position for TP/SL (Paper + MT5)"""
         if not self.current_position:
             return
         
@@ -786,6 +1083,10 @@ class V3BTradingEngine:
             if self.balance > self.peak_balance:
                 self.peak_balance = self.balance
             
+            # Close MT5 position if exists
+            if self.mt5_trader.initialized:
+                await self.mt5_trader.close_position()
+            
             await self.telegram.send_tp_hit(pos['entry'], pos['tp'], pnl, self.balance)
             logger.info(f"✅ TP HIT! +${pnl:.2f}")
             
@@ -795,6 +1096,10 @@ class V3BTradingEngine:
         elif sl_hit:
             pnl = -pos['risk_amt']
             self.balance += pnl
+            
+            # Close MT5 position if exists
+            if self.mt5_trader.initialized:
+                await self.mt5_trader.close_position()
             
             await self.telegram.send_sl_hit(pos['entry'], pos['sl'], pnl, self.balance)
             logger.info(f"🛑 SL HIT! ${pnl:.2f}")
@@ -811,6 +1116,10 @@ class V3BTradingEngine:
             self.balance += pnl
             if self.balance > self.peak_balance:
                 self.peak_balance = self.balance
+            
+            # Close MT5 position if exists
+            if self.mt5_trader.initialized:
+                await self.mt5_trader.close_position()
             
             await self.telegram.send_message(
                 f"⏰ *TIMEOUT* - Position closed\nPnL: ${pnl:.2f}"
@@ -879,6 +1188,9 @@ class V3BTradingEngine:
             except Exception as e:
                 logger.error(f"Main loop error: {e}")
                 await asyncio.sleep(60)
+        
+        # Shutdown MT5 connection
+        self.mt5_trader.shutdown()
         
         await self.telegram.send_message(
             f"🛑 *Terminator V3B Stopped*\n"
