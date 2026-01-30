@@ -38,7 +38,15 @@ from flask import Flask
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.preprocessing import StandardScaler
 from hmmlearn import hmm
-import MetaTrader5 as mt5
+
+# MT5 import - optional (only on Windows)
+try:
+    import MetaTrader5 as mt5
+    MT5_AVAILABLE = True
+except ImportError:
+    MT5_AVAILABLE = False
+    logger_temp = logging.getLogger(__name__)
+    logger_temp.warning("MetaTrader5 not available - MT5 trading disabled (Linux/Mac)")
 
 # Windows encoding fix
 if sys.platform == 'win32':
@@ -275,6 +283,11 @@ class MT5Trader:
     
     async def initialize(self) -> bool:
         """Initialize MT5 connection"""
+        # Check if MT5 library is available (Windows only)
+        if not MT5_AVAILABLE:
+            logger.info("📊 MT5 library not available (Linux/Mac) - Paper trading only")
+            return False
+        
         if not self.config.USE_MT5:
             logger.info("📊 MT5 disabled in config")
             return False
