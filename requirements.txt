@@ -1,11 +1,8 @@
-ccxt
 pandas
-pandas-ta
 numpy
 scipy
 yfinance
 python-telegram-bot
-aiosqlite
 flask
 aiohttp
 scikit-learn
