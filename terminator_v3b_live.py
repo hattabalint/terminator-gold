@@ -507,20 +507,60 @@ class MT5Trader:
             logger.info("MT5 connection closed")
 
 
-# ==================== PRICE FETCHER ====================
+# ==================== PRICE FETCHER (Multi-Source with Stale Detection) ====================
 class PriceFetcher:
     def __init__(self):
         self.last_price = None
         self.last_update = None
+        self.stale_count = 0  # Track how many times we got the same price
+        self.last_different_price = None
+        self.last_different_time = None
     
     async def get_current_price(self) -> Optional[float]:
-        url = "https://data-asg.goldprice.org/dbXRates/USD"
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "application/json"
-        }
+        """Fetch price from multiple sources with stale detection"""
+        price = None
         
-        for attempt in range(3):
+        # Try goldprice.org first
+        price = await self._fetch_goldprice_org()
+        
+        # Fallback to metals-api if goldprice failed
+        if price is None:
+            price = await self._fetch_metals_api()
+        
+        # Fallback to gold-api.com
+        if price is None:
+            price = await self._fetch_gold_api()
+        
+        if price is None:
+            logger.error("❌ Could not get SPOT price from ANY source!")
+            return self.last_price
+        
+        # Stale price detection
+        if self.last_price is not None and abs(price - self.last_price) < 0.01:
+            self.stale_count += 1
+            if self.stale_count >= 60:  # Same price for 60+ minutes (1 hour)
+                logger.warning(f"⚠️ STALE PRICE WARNING: ${price:.2f} unchanged for {self.stale_count} checks!")
+        else:
+            if self.stale_count > 5:
+                logger.info(f"✅ Price updated after {self.stale_count} stale readings: ${self.last_price:.2f} → ${price:.2f}")
+            self.stale_count = 0
+            self.last_different_price = price
+            self.last_different_time = datetime.now()
+        
+        self.last_price = price
+        self.last_update = datetime.now()
+        return price
+    
+    def is_price_stale(self) -> bool:
+        """Check if current price appears to be stale/frozen"""
+        return self.stale_count >= 60  # 1 hour of same price = stale
+    
+    async def _fetch_goldprice_org(self) -> Optional[float]:
+        """Primary source: goldprice.org"""
+        url = "https://data-asg.goldprice.org/dbXRates/USD"
+        headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+        
+        for attempt in range(2):
             try:
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url, headers=headers, timeout=10) as resp:
@@ -528,15 +568,46 @@ class PriceFetcher:
                             data = await resp.json()
                             price = data.get('items', [{}])[0].get('xauPrice')
                             if price:
-                                self.last_price = float(price)
-                                self.last_update = datetime.now()
-                                return self.last_price
+                                return float(price)
             except Exception as e:
-                logger.warning(f"Price fetch attempt {attempt+1} failed: {e}")
-            await asyncio.sleep(1)
-        
-        logger.error("Could not get SPOT price after 3 attempts")
-        return self.last_price
+                logger.debug(f"goldprice.org attempt {attempt+1} failed: {e}")
+            await asyncio.sleep(0.5)
+        return None
+    
+    async def _fetch_metals_api(self) -> Optional[float]:
+        """Fallback source: metals-api.com (free tier)"""
+        try:
+            # This is a public endpoint that doesn't require API key
+            url = "https://www.metals-api.com/api/latest?access_key=free&base=USD&symbols=XAU"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=10) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data.get('success') and 'rates' in data:
+                            xau_rate = data['rates'].get('XAU')
+                            if xau_rate and xau_rate > 0:
+                                return 1.0 / xau_rate  # Convert XAU/USD rate to USD/XAU
+            logger.debug("metals-api.com failed or rate limited")
+        except Exception as e:
+            logger.debug(f"metals-api.com error: {e}")
+        return None
+    
+    async def _fetch_gold_api(self) -> Optional[float]:
+        """Second fallback: gold-api.com"""
+        try:
+            url = "https://www.goldapi.io/api/XAU/USD"
+            headers = {"x-access-token": "goldapi-free", "Content-Type": "application/json"}
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers, timeout=10) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        price = data.get('price')
+                        if price:
+                            return float(price)
+            logger.debug("gold-api.com failed")
+        except Exception as e:
+            logger.debug(f"gold-api.com error: {e}")
+        return None
 
 
 # ==================== CANDLE COLLECTOR (Auto-save new SPOT candles) ====================
@@ -580,8 +651,14 @@ class CandleCollector:
         logger.debug(f"🕐 Started new candle at {ts}")
     
     async def _save_candle(self):
-        """Save completed candle to CSV"""
+        """Save completed candle to CSV - SKIP if stale (O=H=L=C)"""
         if self.current_candle['ts'] is None:
+            return
+        
+        # SKIP stale candles where O=H=L=C (frozen price from weekend/API issue)
+        o, h, l, c = self.current_candle['o'], self.current_candle['h'], self.current_candle['l'], self.current_candle['c']
+        if abs(h - l) < 0.01:  # No price movement at all
+            logger.warning(f"⚠️ SKIPPING stale candle (O=H=L=C): {self.current_candle['ts']} price=${c:.2f}")
             return
         
         import os
