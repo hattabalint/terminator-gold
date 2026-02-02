@@ -69,6 +69,7 @@ class Config:
     ASTERDEX_SYMBOL = "XAUUSDT"  # XAUUSDT Perpetual
     ASTERDEX_LEVERAGE = 10       # 10x leverage
     ASTERDEX_MARGIN_TYPE = "CROSSED"  # Cross margin
+    ASTERDEX_RISK_PERCENT = 0.015  # 1.5% risk per trade for LIVE trading
     
     # Trading Mode - set PAPER_TRADING=false to enable live AsterDex trading
     PAPER_TRADING = os.environ.get('PAPER_TRADING', 'true').lower() == 'true'
@@ -1287,7 +1288,13 @@ class V3BTradingEngine:
     
     async def open_position(self, signal: Dict):
         """Open V3B position (Paper + AsterDex Live + MT5)"""
-        risk_pct = self.get_adaptive_risk()
+        
+        # Use 1.5% risk for AsterDex live trades, adaptive risk for paper
+        if not self.config.PAPER_TRADING and self.asterdex:
+            risk_pct = self.config.ASTERDEX_RISK_PERCENT  # 1.5% for live
+        else:
+            risk_pct = self.get_adaptive_risk()  # 2% (or adaptive) for paper
+        
         risk_amt = self.balance * risk_pct
         
         # Calculate quantity for AsterDex
