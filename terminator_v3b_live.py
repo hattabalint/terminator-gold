@@ -6,10 +6,17 @@ import io
 import logging
 import json
 import random
-import MetaTrader5 as mt5
 from datetime import datetime, timedelta
 from threading import Thread
 from typing import Optional, Dict
+
+# MT5 import - optional (Windows only)
+try:
+    import MetaTrader5 as mt5
+    MT5_AVAILABLE = True
+except ImportError:
+    MT5_AVAILABLE = False
+    mt5 = None
 
 import pandas as pd
 import numpy as np
