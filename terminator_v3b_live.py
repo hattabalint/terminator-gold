@@ -233,6 +233,11 @@ class MT5Trader:
         
     async def initialize(self) -> bool:
         """Initialize connection to MetaTrader 5"""
+        # Skip MT5 on Linux/Render where it's not available
+        if not MT5_AVAILABLE:
+            logger.info("📊 MT5 not available (Linux/Render) - Paper trading only")
+            return False
+            
         logger.info(f"🔌 Connecting to MT5 Server: {self.config.MT5_SERVER}...")
         if not mt5.initialize():
             logger.error(f"MT5 Init failed: {mt5.last_error()}")
