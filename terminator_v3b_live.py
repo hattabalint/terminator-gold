@@ -534,7 +534,7 @@ class V3BTradingEngine:
         self.price_fetcher = PriceFetcher()
         self.candle_collector = CandleCollector(self.price_fetcher)
         self.model = V3BModel(config)
-        self.mt5_trader = MT5Trader(config, self.telegram) # Added MT5
+        self.mt5_trader = MT5Trader(config, self.telegram) if MT5_AVAILABLE else None  # Only create if available
         
         self.balance = config.STARTING_BALANCE
         self.peak_balance = config.STARTING_BALANCE
@@ -545,7 +545,8 @@ class V3BTradingEngine:
     
     async def initialize(self):
         logger.info("🥇 Initializing Terminator V3B Live...")
-        await self.mt5_trader.initialize() # MT5 init
+        if self.mt5_trader:
+            await self.mt5_trader.initialize()  # MT5 init only if available
         await self.model.train()
         await self.news_filter.update_calendar()
         
@@ -659,13 +660,19 @@ class V3BTradingEngine:
                 if not self.current_position:
                     current_minute = datetime.now().minute
                     if current_minute <= self.config.SIGNAL_WINDOW_MINUTES:
-                         # Check MT5 position
-                        pos_status = self.mt5_trader.check_position()
+                        # Check position status (MT5 or paper)
+                        pos_status = "CLOSED"
+                        if self.mt5_trader:
+                            pos_status = self.mt5_trader.check_position()
+                        
                         if pos_status == "CLOSED": 
                             signal = await self.check_for_signal()
                             if signal:
                                 risk = self.get_adaptive_risk()
-                                await self.mt5_trader.execute_trade(signal['direction'], signal['entry'], signal['sl'], signal['tp'], risk)
+                                # Execute trade (MT5 if available, otherwise paper)
+                                if self.mt5_trader:
+                                    await self.mt5_trader.execute_trade(signal['direction'], signal['entry'], signal['sl'], signal['tp'], risk)
+                                # Always send Telegram signal
                                 await self.telegram.send_signal(signal['direction'], signal['ml_confidence'], signal['entry'], signal['sl'], signal['tp'], risk, signal['atr'])
                                 self.last_exit_bar = self.bar_count
                         
