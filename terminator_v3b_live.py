@@ -6,9 +6,14 @@ import io
 import logging
 import json
 import random
+import time
+import hashlib
+import hmac
 from datetime import datetime, timedelta
 from threading import Thread
 from typing import Optional, Dict
+from urllib.parse import urlencode
+
 
 # MT5 import - optional (Windows only)
 try:
@@ -36,33 +41,43 @@ class Config:
     TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
     TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
     
-    # MT5 Login
+    # MT5 Login (for Windows)
     MT5_LOGIN = os.environ.get('MT5_LOGIN')
     MT5_PASSWORD = os.environ.get('MT5_PASSWORD')
     MT5_SERVER = os.environ.get('MT5_SERVER')
+    
+    # AsterDex API (for Render)
+    ASTERDEX_API_KEY = os.environ.get('ASTERDEX_API_KEY')
+    ASTERDEX_SECRET_KEY = os.environ.get('ASTERDEX_SECRET_KEY')
+    ASTERDEX_BASE_URL = "https://fapi.asterdex.com"
 
     # Trading
-    PAPER_TRADING = False  # Changed to FALSE for Live
+    PAPER_TRADING = os.environ.get('PAPER_TRADING', 'false').lower() == 'true'
     STARTING_BALANCE = float(os.environ.get('STARTING_BALANCE', '1000'))
     
     # ===== V3B EXACT SETTINGS =====
     ML_THRESHOLD = 0.455    # EXACT from backtest
     SL_MULTIPLIER = 0.80    # ATR × 0.80
     RR = 3.0                # Risk-Reward 3:1
-    BASE_RISK = 0.01        # 1% risk per trade (Funded Account Safety)
+    BASE_RISK = 0.015       # 1.5% risk per trade
     COOLDOWN_BARS = 1       # Wait 1 bar after trade
     MTF_FILTER = False      # MTF OFF (more trades)
     MAX_HOLD_BARS = 60      # Max 60 bars to hold
     
+    # Emergency SL (extra safety - wider than normal SL)
+    EMERGENCY_SL_MULTIPLIER = 2.0  # ATR × 2.0 = emergency SL
+    
     # Adaptive Risk (from backtest)
-    RISK_DD_THRESHOLD_1 = 10  # If DD > 10%: risk = 2.25%
-    RISK_DD_THRESHOLD_2 = 20  # If DD > 20%: risk = 1.5%
+    RISK_DD_THRESHOLD_1 = 10  # If DD > 10%: risk = 1.125%
+    RISK_DD_THRESHOLD_2 = 20  # If DD > 20%: risk = 0.75%
     
     # Costs
     SLIPPAGE = 0.60
     
     # Data
     SYMBOL = "XAUUSD"
+    SYMBOL_FUTURES = "XAUUSDT"  # AsterDex symbol
+    LEVERAGE = 10
     CHECK_INTERVAL = 60  # Check every 60 seconds
     SIGNAL_WINDOW_MINUTES = 5  # First 5 mins of hour
 
@@ -185,6 +200,130 @@ class TelegramBot:
 💵 Balance: *${balance:.2f}*
 """
         await self.send_message(message)
+
+
+# ==================== ASTERDEX API CLIENT ====================
+class AsterDexClient:
+    """AsterDex Futures API Client (Binance-compatible)"""
+    
+    def __init__(self, api_key: str, secret_key: str, base_url: str):
+        self.api_key = api_key
+        self.secret_key = secret_key
+        self.base_url = base_url
+    
+    def _sign(self, params: dict) -> str:
+        """Generate HMAC-SHA256 signature"""
+        query_string = urlencode(params)
+        signature = hmac.new(
+            self.secret_key.encode('utf-8'),
+            query_string.encode('utf-8'),
+            hashlib.sha256
+        ).hexdigest()
+        return signature
+    
+    async def _request(self, method: str, endpoint: str, params: dict = None, signed: bool = False) -> dict:
+        """Make API request"""
+        url = f"{self.base_url}{endpoint}"
+        headers = {"X-MBX-APIKEY": self.api_key}
+        
+        if params is None:
+            params = {}
+        
+        if signed:
+            params['timestamp'] = int(time.time() * 1000)
+            params['recvWindow'] = 5000
+            params['signature'] = self._sign(params)
+        
+        async with aiohttp.ClientSession() as session:
+            if method == "GET":
+                async with session.get(url, params=params, headers=headers) as resp:
+                    return await resp.json()
+            elif method == "POST":
+                async with session.post(url, params=params, headers=headers) as resp:
+                    return await resp.json()
+            elif method == "DELETE":
+                async with session.delete(url, params=params, headers=headers) as resp:
+                    return await resp.json()
+    
+    async def get_account_info(self) -> dict:
+        """Get account balance and positions"""
+        return await self._request("GET", "/fapi/v2/account", signed=True)
+    
+    async def get_position_info(self, symbol: str) -> dict:
+        """Get position for symbol"""
+        params = {"symbol": symbol}
+        result = await self._request("GET", "/fapi/v2/positionRisk", params, signed=True)
+        if isinstance(result, list):
+            for pos in result:
+                if pos.get('symbol') == symbol:
+                    return pos
+        return None
+    
+    async def set_leverage(self, symbol: str, leverage: int) -> dict:
+        """Set leverage for symbol"""
+        params = {"symbol": symbol, "leverage": leverage}
+        return await self._request("POST", "/fapi/v1/leverage", params, signed=True)
+    
+    async def set_margin_type(self, symbol: str, margin_type: str) -> dict:
+        """Set margin type (ISOLATED or CROSSED)"""
+        params = {"symbol": symbol, "marginType": margin_type}
+        try:
+            return await self._request("POST", "/fapi/v1/marginType", params, signed=True)
+        except:
+            pass  # May already be set
+    
+    async def get_price(self, symbol: str) -> float:
+        """Get current price"""
+        result = await self._request("GET", "/fapi/v1/ticker/price", {"symbol": symbol})
+        return float(result.get('price', 0))
+    
+    async def place_market_order(self, symbol: str, side: str, quantity: float) -> dict:
+        """Place market order"""
+        params = {
+            "symbol": symbol,
+            "side": side,  # BUY or SELL
+            "type": "MARKET",
+            "quantity": quantity
+        }
+        return await self._request("POST", "/fapi/v1/order", params, signed=True)
+    
+    async def place_stop_loss(self, symbol: str, side: str, quantity: float, stop_price: float) -> dict:
+        """Place stop loss order"""
+        params = {
+            "symbol": symbol,
+            "side": side,  # BUY (close short) or SELL (close long)
+            "type": "STOP_MARKET",
+            "stopPrice": f"{stop_price:.2f}",
+            "quantity": quantity,
+            "closePosition": "true"
+        }
+        return await self._request("POST", "/fapi/v1/order", params, signed=True)
+    
+    async def place_take_profit(self, symbol: str, side: str, quantity: float, stop_price: float) -> dict:
+        """Place take profit order"""
+        params = {
+            "symbol": symbol,
+            "side": side,  # BUY (close short) or SELL (close long)
+            "type": "TAKE_PROFIT_MARKET",
+            "stopPrice": f"{stop_price:.2f}",
+            "quantity": quantity,
+            "closePosition": "true"
+        }
+        return await self._request("POST", "/fapi/v1/order", params, signed=True)
+    
+    async def cancel_all_orders(self, symbol: str) -> dict:
+        """Cancel all open orders"""
+        params = {"symbol": symbol}
+        return await self._request("DELETE", "/fapi/v1/allOpenOrders", params, signed=True)
+    
+    async def close_position(self, symbol: str) -> dict:
+        """Close current position"""
+        pos = await self.get_position_info(symbol)
+        if pos and float(pos.get('positionAmt', 0)) != 0:
+            amt = float(pos['positionAmt'])
+            side = "SELL" if amt > 0 else "BUY"
+            return await self.place_market_order(symbol, side, abs(amt))
+        return None
 
 
 # ==================== NEWS FILTER ====================
@@ -564,7 +703,14 @@ class V3BTradingEngine:
         self.price_fetcher = PriceFetcher()
         self.candle_collector = CandleCollector(self.price_fetcher)
         self.model = V3BModel(config)
-        self.mt5_trader = MT5Trader(config, self.telegram) if MT5_AVAILABLE else None  # Only create if available
+        self.mt5_trader = MT5Trader(config, self.telegram) if MT5_AVAILABLE else None
+        
+        # AsterDex client (for Render when MT5 not available)
+        self.asterdex = AsterDexClient(
+            config.ASTERDEX_API_KEY,
+            config.ASTERDEX_SECRET_KEY,
+            config.ASTERDEX_BASE_URL
+        ) if config.ASTERDEX_API_KEY else None
         
         self.balance = config.STARTING_BALANCE
         self.peak_balance = config.STARTING_BALANCE
@@ -572,18 +718,44 @@ class V3BTradingEngine:
         self.last_exit_bar = -100
         self.bar_count = 0
         self.running = False
+        self.quantity_precision = 3  # XAUUSDT precision
     
     async def initialize(self):
-        logger.info("🥇 Initializing Terminator V3B Live...")
+        logger.info("Initializing Terminator V3B Live...")
+        
+        # MT5 init (Windows)
         if self.mt5_trader:
-            await self.mt5_trader.initialize()  # MT5 init only if available
+            await self.mt5_trader.initialize()
+        
+        # AsterDex init (Render)
+        if self.asterdex and not self.config.PAPER_TRADING:
+            try:
+                logger.info("Connecting to AsterDex...")
+                account = await self.asterdex.get_account_info()
+                if account and 'totalWalletBalance' in account:
+                    self.balance = float(account['totalWalletBalance'])
+                    self.peak_balance = self.balance
+                    logger.info(f"AsterDex connected! Balance: ${self.balance:.2f}")
+                    
+                    # Set leverage
+                    await self.asterdex.set_leverage(self.config.SYMBOL_FUTURES, self.config.LEVERAGE)
+                    logger.info(f"Leverage set: {self.config.LEVERAGE}x")
+                else:
+                    logger.warning(f"AsterDex account info error: {account}")
+            except Exception as e:
+                logger.error(f"AsterDex connection error: {e}")
+        
         await self.model.train()
         await self.news_filter.update_calendar()
         
+        mode = "PAPER" if self.config.PAPER_TRADING else ("MT5" if self.mt5_trader else "ASTERDEX")
         await self.telegram.send_message(
-            f"🥇 *TERMINATOR V3B LIVE STARTED* 🥇\nMode: 💰 LIVE (MT5)\nRisk: {self.config.BASE_RISK*100}%"
+            f"*TERMINATOR V3B LIVE STARTED*\n"
+            f"Mode: {mode}\n"
+            f"Risk: {self.config.BASE_RISK*100:.1f}%\n"
+            f"Balance: ${self.balance:.2f}"
         )
-        logger.info("✅ V3B Engine initialized")
+        logger.info("V3B Engine initialized")
     
     def get_adaptive_risk(self) -> float:
         return self.config.BASE_RISK  # 1%
@@ -695,13 +867,77 @@ class V3BTradingEngine:
                         if self.mt5_trader:
                             pos_status = self.mt5_trader.check_position()
                         
+                        # Also check AsterDex position
+                        if self.asterdex and not self.config.PAPER_TRADING:
+                            try:
+                                pos = await self.asterdex.get_position_info(self.config.SYMBOL_FUTURES)
+                                if pos and float(pos.get('positionAmt', 0)) != 0:
+                                    pos_status = "LONG" if float(pos['positionAmt']) > 0 else "SHORT"
+                            except:
+                                pass
+                        
                         if pos_status == "CLOSED": 
                             signal = await self.check_for_signal()
                             if signal:
                                 risk = self.get_adaptive_risk()
-                                # Execute trade (MT5 if available, otherwise paper)
+                                
+                                # Execute trade on MT5 (Windows)
                                 if self.mt5_trader:
                                     await self.mt5_trader.execute_trade(signal['direction'], signal['entry'], signal['sl'], signal['tp'], risk)
+                                
+                                # Execute trade on AsterDex (Render)
+                                elif self.asterdex and not self.config.PAPER_TRADING:
+                                    try:
+                                        # Calculate quantity
+                                        risk_amount = self.balance * risk
+                                        sl_dist = abs(signal['entry'] - signal['sl'])
+                                        qty = risk_amount / sl_dist
+                                        qty = round(qty, self.quantity_precision)
+                                        
+                                        # Minimum notional check (5 USDT)
+                                        if qty * signal['entry'] < 5:
+                                            qty = 5.1 / signal['entry']
+                                            qty = round(qty, self.quantity_precision)
+                                        
+                                        side = "BUY" if signal['direction'] == 'LONG' else "SELL"
+                                        
+                                        # Place market order
+                                        result = await self.asterdex.place_market_order(
+                                            self.config.SYMBOL_FUTURES, side, qty
+                                        )
+                                        
+                                        if 'orderId' in result:
+                                            logger.info(f"AsterDex order placed: {result['orderId']}")
+                                            
+                                            # Place SL order
+                                            sl_side = "SELL" if signal['direction'] == 'LONG' else "BUY"
+                                            await self.asterdex.place_stop_loss(
+                                                self.config.SYMBOL_FUTURES, sl_side, qty, signal['sl']
+                                            )
+                                            logger.info(f"SL placed @ ${signal['sl']:.2f}")
+                                            
+                                            # Place TP order
+                                            await self.asterdex.place_take_profit(
+                                                self.config.SYMBOL_FUTURES, sl_side, qty, signal['tp']
+                                            )
+                                            logger.info(f"TP placed @ ${signal['tp']:.2f}")
+                                            
+                                            # Place EMERGENCY SL (wider, extra safety)
+                                            emergency_sl_dist = signal['atr'] * self.config.EMERGENCY_SL_MULTIPLIER
+                                            if signal['direction'] == 'LONG':
+                                                emergency_sl = signal['entry'] - emergency_sl_dist
+                                            else:
+                                                emergency_sl = signal['entry'] + emergency_sl_dist
+                                            
+                                            await self.asterdex.place_stop_loss(
+                                                self.config.SYMBOL_FUTURES, sl_side, qty, emergency_sl
+                                            )
+                                            logger.info(f"EMERGENCY SL placed @ ${emergency_sl:.2f}")
+                                        else:
+                                            logger.error(f"AsterDex order failed: {result}")
+                                    except Exception as e:
+                                        logger.error(f"AsterDex trade error: {e}")
+                                
                                 # Always send Telegram signal
                                 await self.telegram.send_signal(signal['direction'], signal['ml_confidence'], signal['entry'], signal['sl'], signal['tp'], risk, signal['atr'])
                                 self.last_exit_bar = self.bar_count
