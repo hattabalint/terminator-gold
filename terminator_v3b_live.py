@@ -116,7 +116,9 @@ def keep_alive():
     t = Thread(target=run_flask)
     t.daemon = True
     t.start()
-    logger.info("🌐 Flask Keep-Alive Server Started on Port 8000")
+    logger.info("VERSION: a5a5721-FIX2 - MT5_AVAILABLE check added to PriceFetcher")
+    logger.info(f"MT5_AVAILABLE = {MT5_AVAILABLE}")
+    logger.info("Flask Keep-Alive Server Started on Port 8000")
 
 
 # ==================== TELEGRAM BOT ====================
@@ -310,12 +312,40 @@ class PriceFetcher:
     def __init__(self):
         self.last_price = None
         self.last_update = None
+        self.consecutive_failures = 0
     
     def get_current_price(self) -> float:
-        # Prefer MT5 price if available
+        # Prefer MT5 price if available (Windows only)
         if MT5_AVAILABLE and mt5.initialize():
             tick = mt5.symbol_info_tick("XAUUSD")
-            if tick: return tick.last
+            if tick: 
+                self.last_price = tick.last
+                self.consecutive_failures = 0
+                return tick.last
+        
+        # goldprice.org SPOT price (primary source for Render)
+        try:
+            import requests
+            url = "https://data-asg.goldprice.org/dbXRates/USD"
+            headers = {"User-Agent": "Mozilla/5.0"}
+            resp = requests.get(url, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                price = float(data['items'][0]['xauPrice'])
+                self.last_price = price
+                self.last_update = datetime.now()
+                self.consecutive_failures = 0
+                return price
+        except Exception as e:
+            self.consecutive_failures += 1
+            if self.consecutive_failures <= 3:
+                logger.warning(f"goldprice.org fetch failed ({self.consecutive_failures}/3): {e}")
+            elif self.consecutive_failures == 4:
+                logger.error(f"goldprice.org down - using cached price until recovery")
+        
+        # Return cached price if available (keeps bot running during API outage)
+        if self.last_price:
+            return self.last_price
         return 0.0
 
 
