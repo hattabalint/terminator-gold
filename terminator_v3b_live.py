@@ -878,6 +878,38 @@ class V3BTradingEngine:
                         
                         if pos_status == "CLOSED": 
                             signal = await self.check_for_signal()
+                else:
+                    # We have a position - check if it closed
+                    pos_status = "CLOSED"
+                    if self.mt5_trader:
+                        pos_status = self.mt5_trader.check_position()
+                    if self.asterdex and not self.config.PAPER_TRADING:
+                        try:
+                            pos = await self.asterdex.get_position_info(self.config.SYMBOL_FUTURES)
+                            if pos and float(pos.get('positionAmt', 0)) != 0:
+                                pos_status = "OPEN"
+                        except:
+                            pass
+                    
+                    if pos_status == "CLOSED":
+                        logger.info("Position closed - ready for new signals")
+                        self.current_position = None
+                
+                # Only execute if we found a signal AND no position
+                if not self.current_position:
+                    current_minute = datetime.now().minute
+                    if current_minute <= self.config.SIGNAL_WINDOW_MINUTES:
+                        pos_status = "CLOSED"
+                        if self.asterdex and not self.config.PAPER_TRADING:
+                            try:
+                                pos = await self.asterdex.get_position_info(self.config.SYMBOL_FUTURES)
+                                if pos and float(pos.get('positionAmt', 0)) != 0:
+                                    pos_status = "OPEN"
+                            except:
+                                pass
+                        
+                        if pos_status == "CLOSED":
+                            signal = await self.check_for_signal()
                             if signal:
                                 risk = self.get_adaptive_risk()
                                 
@@ -933,12 +965,19 @@ class V3BTradingEngine:
                                                 self.config.SYMBOL_FUTURES, sl_side, qty, emergency_sl
                                             )
                                             logger.info(f"EMERGENCY SL placed @ ${emergency_sl:.2f}")
+                                            
+                                            # Mark position as open
+                                            self.current_position = signal
                                         else:
                                             logger.error(f"AsterDex order failed: {result}")
                                     except Exception as e:
                                         logger.error(f"AsterDex trade error: {e}")
                                 
-                                # Always send Telegram signal
+                                # Mark position for MT5 too
+                                if self.mt5_trader:
+                                    self.current_position = signal
+                                
+                                # Always send Telegram signal (only once per trade!)
                                 await self.telegram.send_signal(signal['direction'], signal['ml_confidence'], signal['entry'], signal['sl'], signal['tp'], risk, signal['atr'])
                                 self.last_exit_bar = self.bar_count
                         
