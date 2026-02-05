@@ -312,8 +312,8 @@ class PriceFetcher:
         self.last_update = None
     
     def get_current_price(self) -> float:
-        # Prefer MT5 price
-        if mt5.initialize():
+        # Prefer MT5 price if available
+        if MT5_AVAILABLE and mt5.initialize():
             tick = mt5.symbol_info_tick("XAUUSD")
             if tick: return tick.last
         return 0.0
