@@ -732,18 +732,40 @@ class V3BTradingEngine:
             try:
                 logger.info("Connecting to AsterDex...")
                 account = await self.asterdex.get_account_info()
-                if account and 'totalWalletBalance' in account:
-                    self.balance = float(account['totalWalletBalance'])
-                    self.peak_balance = self.balance
+                logger.info(f"AsterDex response: {account}")  # Debug log
+                
+                # Try different balance fields (availableBalance first - that's the usable balance)
+                balance = None
+                if account:
+                    if 'availableBalance' in account:
+                        balance = float(account['availableBalance'])
+                    elif 'totalWalletBalance' in account:
+                        balance = float(account['totalWalletBalance'])
+                    elif 'totalBalance' in account:
+                        balance = float(account['totalBalance'])
+                    elif 'balance' in account:
+                        balance = float(account['balance'])
+                    elif 'assets' in account:
+                        # Some responses have assets array
+                        for asset in account['assets']:
+                            if asset.get('asset') == 'USDT':
+                                balance = float(asset.get('availableBalance', 0)) or float(asset.get('walletBalance', 0))
+                                break
+                
+                if balance and balance > 0:
+                    self.balance = balance
+                    self.peak_balance = balance
                     logger.info(f"AsterDex connected! Balance: ${self.balance:.2f}")
-                    
-                    # Set leverage
-                    await self.asterdex.set_leverage(self.config.SYMBOL_FUTURES, self.config.LEVERAGE)
-                    logger.info(f"Leverage set: {self.config.LEVERAGE}x")
                 else:
-                    logger.warning(f"AsterDex account info error: {account}")
+                    logger.warning(f"Could not get balance from response, using STARTING_BALANCE: ${self.config.STARTING_BALANCE}")
+                    self.balance = self.config.STARTING_BALANCE
+                
+                # Set leverage
+                await self.asterdex.set_leverage(self.config.SYMBOL_FUTURES, self.config.LEVERAGE)
+                logger.info(f"Leverage set: {self.config.LEVERAGE}x")
             except Exception as e:
                 logger.error(f"AsterDex connection error: {e}")
+                logger.info(f"Using STARTING_BALANCE: ${self.config.STARTING_BALANCE}")
         
         await self.model.train()
         await self.news_filter.update_calendar()
