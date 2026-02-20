@@ -67,7 +67,7 @@ class Config:
     # Emergency SL (extra safety - wider than normal SL)
     EMERGENCY_SL_MULTIPLIER = 2.0  # ATR × 2.0 = emergency SL
     
-    # Adaptive Risk (from backtest)
+    # Adaptive Risk
     RISK_DD_THRESHOLD_1 = 10  # If DD > 10%: risk = 1.125%
     RISK_DD_THRESHOLD_2 = 20  # If DD > 20%: risk = 0.75%
     
@@ -825,7 +825,14 @@ class V3BTradingEngine:
         logger.info("V3B Engine initialized")
     
     def get_adaptive_risk(self) -> float:
-        return self.config.BASE_RISK  # 1%
+        """Adaptive risk logic - reduces risk during drawdowns"""
+        current_dd = (self.peak_balance - self.balance) / self.peak_balance * 100 if self.peak_balance > self.balance else 0
+        base_risk = self.config.BASE_RISK  # 1.5%
+        if current_dd > self.config.RISK_DD_THRESHOLD_2:  # DD > 20%
+            return 0.0075  # 0.75%
+        elif current_dd > self.config.RISK_DD_THRESHOLD_1:  # DD > 10%
+            return 0.01125  # 1.125%
+        return base_risk  # 1.5%
     
     async def check_for_signal(self) -> Optional[Dict]:
         """Check if there's a valid V3B signal - EXACT USER LOGIC"""
@@ -857,8 +864,9 @@ class V3BTradingEngine:
             else:
                 df = df_base
             
-            df = df.tail(200).reset_index(drop=True)
-            if len(df) < 100: return None
+            # Use FULL dataset for proper indicator calculation (matches original backtest)
+            # EMA200 needs 200+ candles to stabilize properly
+            if len(df) < 300: return None
             
             df = self.model.calculate_indicators(df)
             i = len(df) - 1
@@ -929,26 +937,24 @@ class V3BTradingEngine:
                 
                 await self.candle_collector.update()
                 
-                # Check for new signal - ORIGINAL LOGIC
+                # Check for new signal - EVERY HOUR (matches original backtest)
                 if not self.current_position:
-                    current_minute = datetime.now().minute
-                    if current_minute <= self.config.SIGNAL_WINDOW_MINUTES:
-                        # Check position status (MT5 or paper)
-                        pos_status = "CLOSED"
-                        if self.mt5_trader:
-                            pos_status = self.mt5_trader.check_position()
-                        
-                        # Also check AsterDex position
-                        if self.asterdex and not self.config.PAPER_TRADING:
-                            try:
-                                pos = await self.asterdex.get_position_info(self.config.SYMBOL_FUTURES)
-                                if pos and float(pos.get('positionAmt', 0)) != 0:
-                                    pos_status = "LONG" if float(pos['positionAmt']) > 0 else "SHORT"
-                            except:
-                                pass
-                        
-                        if pos_status == "CLOSED": 
-                            signal = await self.check_for_signal()
+                    # Check position status (MT5 or paper)
+                    pos_status = "CLOSED"
+                    if self.mt5_trader:
+                        pos_status = self.mt5_trader.check_position()
+                    
+                    # Also check AsterDex position
+                    if self.asterdex and not self.config.PAPER_TRADING:
+                        try:
+                            pos = await self.asterdex.get_position_info(self.config.SYMBOL_FUTURES)
+                            if pos and float(pos.get('positionAmt', 0)) != 0:
+                                pos_status = "LONG" if float(pos['positionAmt']) > 0 else "SHORT"
+                        except:
+                            pass
+                    
+                    if pos_status == "CLOSED": 
+                        signal = await self.check_for_signal()
                 else:
                     # We have a position - check if it closed
                     pos_status = "CLOSED"
@@ -976,93 +982,87 @@ class V3BTradingEngine:
                 
                 # Only execute if we found a signal AND no position
                 if not self.current_position:
-                    current_minute = datetime.now().minute
-                    if current_minute <= self.config.SIGNAL_WINDOW_MINUTES:
-                        pos_status = "CLOSED"
-                        if self.asterdex and not self.config.PAPER_TRADING:
-                            try:
-                                pos = await self.asterdex.get_position_info(self.config.SYMBOL_FUTURES)
-                                if pos and float(pos.get('positionAmt', 0)) != 0:
-                                    pos_status = "OPEN"
-                            except:
-                                pass
-                        
-                        if pos_status == "CLOSED":
-                            signal = await self.check_for_signal()
-                            if signal:
-                                risk = self.get_adaptive_risk()
-                                
-                                # Execute trade on MT5 (Windows)
-                                if self.mt5_trader:
-                                    await self.mt5_trader.execute_trade(signal['direction'], signal['entry'], signal['sl'], signal['tp'], risk)
-                                
-                                # Execute trade on AsterDex (Render)
-                                elif self.asterdex and not self.config.PAPER_TRADING:
-                                    try:
-                                        # Calculate quantity
-                                        risk_amount = self.balance * risk
-                                        sl_dist = abs(signal['entry'] - signal['sl'])
-                                        qty = risk_amount / sl_dist
+                    pos_status = "CLOSED"
+                    if self.asterdex and not self.config.PAPER_TRADING:
+                        try:
+                            pos = await self.asterdex.get_position_info(self.config.SYMBOL_FUTURES)
+                            if pos and float(pos.get('positionAmt', 0)) != 0:
+                                pos_status = "OPEN"
+                        except:
+                            pass
+                    
+                    if pos_status == "CLOSED":
+                        signal = await self.check_for_signal()
+                        if signal:
+                            risk = self.get_adaptive_risk()
+                            
+                            # Execute trade on MT5 (Windows)
+                            if self.mt5_trader:
+                                await self.mt5_trader.execute_trade(signal['direction'], signal['entry'], signal['sl'], signal['tp'], risk)
+                            
+                            # Execute trade on AsterDex (Render)
+                            elif self.asterdex and not self.config.PAPER_TRADING:
+                                try:
+                                    # Calculate quantity
+                                    risk_amount = self.balance * risk
+                                    sl_dist = abs(signal['entry'] - signal['sl'])
+                                    qty = risk_amount / sl_dist
+                                    qty = round(qty, self.quantity_precision)
+                                    
+                                    # Minimum notional check (5 USDT)
+                                    if qty * signal['entry'] < 5:
+                                        qty = 5.1 / signal['entry']
                                         qty = round(qty, self.quantity_precision)
+                                    
+                                    side = "BUY" if signal['direction'] == 'LONG' else "SELL"
+                                    
+                                    # Place market order
+                                    result = await self.asterdex.place_market_order(
+                                        self.config.SYMBOL_FUTURES, side, qty
+                                    )
+                                    
+                                    if 'orderId' in result:
+                                        logger.info(f"AsterDex order placed: {result['orderId']}")
                                         
-                                        # Minimum notional check (5 USDT)
-                                        if qty * signal['entry'] < 5:
-                                            qty = 5.1 / signal['entry']
-                                            qty = round(qty, self.quantity_precision)
-                                        
-                                        side = "BUY" if signal['direction'] == 'LONG' else "SELL"
-                                        
-                                        # Place market order
-                                        result = await self.asterdex.place_market_order(
-                                            self.config.SYMBOL_FUTURES, side, qty
+                                        # Place SL order
+                                        sl_side = "SELL" if signal['direction'] == 'LONG' else "BUY"
+                                        await self.asterdex.place_stop_loss(
+                                            self.config.SYMBOL_FUTURES, sl_side, qty, signal['sl']
                                         )
+                                        logger.info(f"SL placed @ ${signal['sl']:.2f}")
                                         
-                                        if 'orderId' in result:
-                                            logger.info(f"AsterDex order placed: {result['orderId']}")
-                                            
-                                            # Place SL order
-                                            sl_side = "SELL" if signal['direction'] == 'LONG' else "BUY"
-                                            await self.asterdex.place_stop_loss(
-                                                self.config.SYMBOL_FUTURES, sl_side, qty, signal['sl']
-                                            )
-                                            logger.info(f"SL placed @ ${signal['sl']:.2f}")
-                                            
-                                            # Place TP order
-                                            await self.asterdex.place_take_profit(
-                                                self.config.SYMBOL_FUTURES, sl_side, qty, signal['tp']
-                                            )
-                                            logger.info(f"TP placed @ ${signal['tp']:.2f}")
-                                            
-                                            # Place EMERGENCY SL (wider, extra safety)
-                                            emergency_sl_dist = signal['atr'] * self.config.EMERGENCY_SL_MULTIPLIER
-                                            if signal['direction'] == 'LONG':
-                                                emergency_sl = signal['entry'] - emergency_sl_dist
-                                            else:
-                                                emergency_sl = signal['entry'] + emergency_sl_dist
-                                            
-                                            await self.asterdex.place_stop_loss(
-                                                self.config.SYMBOL_FUTURES, sl_side, qty, emergency_sl
-                                            )
-                                            logger.info(f"EMERGENCY SL placed @ ${emergency_sl:.2f}")
-                                            
-                                            # Mark position as open
-                                            self.current_position = signal
+                                        # Place TP order
+                                        await self.asterdex.place_take_profit(
+                                            self.config.SYMBOL_FUTURES, sl_side, qty, signal['tp']
+                                        )
+                                        logger.info(f"TP placed @ ${signal['tp']:.2f}")
+                                        
+                                        # Place EMERGENCY SL (wider, extra safety)
+                                        emergency_sl_dist = signal['atr'] * self.config.EMERGENCY_SL_MULTIPLIER
+                                        if signal['direction'] == 'LONG':
+                                            emergency_sl = signal['entry'] - emergency_sl_dist
                                         else:
-                                            logger.error(f"AsterDex order failed: {result}")
-                                    except Exception as e:
-                                        logger.error(f"AsterDex trade error: {e}")
-                                
-                                # Mark position for MT5 too
-                                if self.mt5_trader:
-                                    self.current_position = signal
-                                
-                                # Always send Telegram signal (only once per trade!)
-                                await self.telegram.send_signal(signal['direction'], signal['ml_confidence'], signal['entry'], signal['sl'], signal['tp'], risk, signal['atr'])
-                                self.last_exit_bar = self.bar_count
-                        
-                        # FAST CHECK during window (1s delay instead of 60s)
-                        await asyncio.sleep(1)
-                        continue
+                                            emergency_sl = signal['entry'] + emergency_sl_dist
+                                        
+                                        await self.asterdex.place_stop_loss(
+                                            self.config.SYMBOL_FUTURES, sl_side, qty, emergency_sl
+                                        )
+                                        logger.info(f"EMERGENCY SL placed @ ${emergency_sl:.2f}")
+                                        
+                                        # Mark position as open
+                                        self.current_position = signal
+                                    else:
+                                        logger.error(f"AsterDex order failed: {result}")
+                                except Exception as e:
+                                    logger.error(f"AsterDex trade error: {e}")
+                            
+                            # Mark position for MT5 too
+                            if self.mt5_trader:
+                                self.current_position = signal
+                            
+                            # Always send Telegram signal (only once per trade!)
+                            await self.telegram.send_signal(signal['direction'], signal['ml_confidence'], signal['entry'], signal['sl'], signal['tp'], risk, signal['atr'])
+                            self.last_exit_bar = self.bar_count
 
                 await asyncio.sleep(self.config.CHECK_INTERVAL)
             except KeyboardInterrupt:
