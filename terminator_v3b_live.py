@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 🥇 TERMINATOR V3B LIVE - GOLD TRADING BOT 🥇
 =============================================
@@ -10,7 +11,7 @@ FINALIZED V3B CONFIG:
   - Cooldown: 1 bar (1 hour)
   - Ensemble: RandomForest + GradientBoosting
   - Exchange: AsterDex (XAUUSDT Futures)
-  - Signal Logic: SPOT price (goldprice.org)
+  - Signal Logic: SPOT price (AsterDex/goldprice.org)
 
 Backtest Results (2025):
   - 210 Trades
@@ -235,11 +236,9 @@ class AsterDexClient:
         """Get USDT available balance"""
         result = await self._request("GET", "/fapi/v2/account", signed=True)
         if isinstance(result, dict):
-            # Try various balance fields
             for field in ['availableBalance', 'totalWalletBalance', 'totalBalance']:
                 if field in result:
                     return float(result[field])
-            # Try assets array
             for asset in result.get('assets', []):
                 if asset.get('asset') == 'USDT':
                     return float(asset.get('availableBalance', 0) or asset.get('walletBalance', 0))
@@ -376,24 +375,69 @@ class PriceFetcher:
         self.last_update = None
 
     async def get_spot_price(self) -> Optional[float]:
-        """Get SPOT gold price from goldprice.org"""
-        url = "https://data-asg.goldprice.org/dbXRates/USD"
-        headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
-        for attempt in range(3):
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=8)) as resp:
-                        if resp.status == 200:
-                            data = await resp.json(content_type=None)
-                            price = data.get('items', [{}])[0].get('xauPrice')
-                            if price:
-                                self.last_spot_price = float(price)
-                                self.last_update = datetime.now()
-                                return self.last_spot_price
-            except Exception as e:
-                logger.warning(f"Spot price fetch attempt {attempt + 1} failed: {e}")
-            await asyncio.sleep(1)
-        logger.warning("Using cached spot price")
+        """Get gold price - tries 3 sources in order:
+        1. AsterDex XAUUSDT (most reliable from Render servers)
+        2. goldprice.org (SPOT)
+        3. Frankfurter API (SPOT fallback)
+        """
+
+        # --- SOURCE 1: AsterDex (no IP blocking, always accessible) ---
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = "https://fapi.asterdex.com/fapi/v1/ticker/price?symbol=XAUUSDT"
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json(content_type=None)
+                        price = data.get('price')
+                        if price and float(price) > 100:
+                            p = float(price)
+                            self.last_spot_price = p
+                            self.last_update = datetime.now()
+                            logger.debug(f"Price from AsterDex: ${p:.2f}")
+                            return p
+        except Exception as e:
+            logger.warning(f"AsterDex price fetch failed: {e}")
+
+        # --- SOURCE 2: goldprice.org ---
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = "https://data-asg.goldprice.org/dbXRates/USD"
+                headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json(content_type=None)
+                        price = data.get('items', [{}])[0].get('xauPrice')
+                        if price:
+                            p = float(price)
+                            self.last_spot_price = p
+                            self.last_update = datetime.now()
+                            logger.debug(f"Price from goldprice.org: ${p:.2f}")
+                            return p
+        except Exception as e:
+            logger.warning(f"goldprice.org fetch failed: {e}")
+
+        # --- SOURCE 3: Frankfurter API ---
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = "https://api.frankfurter.app/latest?from=XAU&to=USD"
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json(content_type=None)
+                        price = data.get('rates', {}).get('USD')
+                        if price and float(price) > 100:
+                            p = float(price)
+                            self.last_spot_price = p
+                            self.last_update = datetime.now()
+                            logger.debug(f"Price from Frankfurter: ${p:.2f}")
+                            return p
+        except Exception as e:
+            logger.warning(f"Frankfurter fetch failed: {e}")
+
+        # All sources failed - use cache
+        if self.last_spot_price:
+            logger.warning(f"All price sources failed - using cached price: ${self.last_spot_price:.2f}")
+        else:
+            logger.error("All price sources failed and no cached price available")
         return self.last_spot_price
 
 
@@ -711,7 +755,6 @@ class V3BTradingEngine:
         """Calculate quantity for AsterDex order based on risk amount"""
         if sl_dist <= 0 or asterdex_price <= 0:
             return 0.0
-        # dollars_at_risk = quantity * sl_dist (since 1 contract = 1 oz approx on AsterDex)
         quantity = risk_amt / sl_dist
         return round(quantity, 3)
 
@@ -917,9 +960,7 @@ class V3BTradingEngine:
         if not self.current_position:
             return
 
-        # Get current price for monitoring
         spot_price = await self.price_fetcher.get_spot_price()
-        # For AsterDex, also check actual AsterDex price for monitoring
         current_price = spot_price
         if self.asterdex:
             ad_price = await self.asterdex.get_asterdex_price()
@@ -938,7 +979,6 @@ class V3BTradingEngine:
         timeout = bars_held >= self.config.MAX_HOLD_BARS
 
         if tp_hit or sl_hit or timeout:
-            # Cancel remaining orders on AsterDex
             if self.asterdex and not self.config.PAPER_TRADING:
                 try:
                     await self.asterdex.cancel_all_orders(self.config.ASTERDEX_SYMBOL)
@@ -987,7 +1027,6 @@ class V3BTradingEngine:
 
         while self.running:
             try:
-                # Bar counter (increment on hour change)
                 current_hour = datetime.now().hour
                 if not hasattr(self, '_last_hour'):
                     self._last_hour = current_hour
@@ -997,13 +1036,9 @@ class V3BTradingEngine:
                     logger.info(f"New bar #{self.bar_count} | Balance=${self.balance:.2f} | "
                                 f"DD={max(0, (self.peak_balance - self.balance) / self.peak_balance * 100):.1f}%")
 
-                # Collect candle
                 await self.candle_collector.update()
-
-                # Monitor open position
                 await self.monitor_position()
 
-                # Check for signal (first 5 mins of hour)
                 if not self.current_position:
                     current_minute = datetime.now().minute
                     if current_minute <= self.config.SIGNAL_WINDOW_MINUTES:
@@ -1011,9 +1046,7 @@ class V3BTradingEngine:
                         if signal:
                             await self.open_position(signal)
 
-                # Weekly retrain
                 await self.check_retrain()
-
                 await asyncio.sleep(self.config.CHECK_INTERVAL)
 
             except KeyboardInterrupt:
