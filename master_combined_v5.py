@@ -545,9 +545,12 @@ def get_sc_features(df, i, direction='LONG'):
 def triple_barrier_label(df, i, direction, rr, sl_mult=1.0, timeout=12):
     """
     Triple Barrier Method labeling:
-      1.0 = TP hit
-      0.0 = SL hit
-      0.3 = timeout (neither) - soft label
+      1.0  = TP hit
+      0.0  = SL hit
+      0.3..0.5 = timeout: time-weighted soft label
+        - exit_pnl_r = actual price move / sl_dist (in R multiples)
+        - mapped to [0.3, 0.5] so the model sees partial signal
+          (e.g. price moved 0.8R toward TP = label 0.47, vs moved 0R = 0.38)
     """
     a = df['atr14'].iloc[i]
     c = df['c'].iloc[i]
@@ -556,7 +559,8 @@ def triple_barrier_label(df, i, direction, rr, sl_mult=1.0, timeout=12):
     sl_dist = a * sl_mult
     tp_dist = sl_dist * rr
 
-    for j in range(i+1, min(i+timeout+1, len(df))):
+    end = min(i + timeout + 1, len(df))
+    for j in range(i + 1, end):
         if direction == 'LONG':
             if df['l'].iloc[j] <= c - sl_dist:
                 return 0.0
@@ -567,7 +571,17 @@ def triple_barrier_label(df, i, direction, rr, sl_mult=1.0, timeout=12):
                 return 0.0
             if df['l'].iloc[j] <= c - tp_dist:
                 return 1.0
-    return 0.3  # timeout
+
+    # Timeout: compute time-weighted soft label
+    exit_c = df['c'].iloc[min(end - 1, len(df) - 1)]
+    if direction == 'LONG':
+        pnl_r = (exit_c - c) / sl_dist  # positive = toward TP
+    else:
+        pnl_r = (c - exit_c) / sl_dist
+    # Clip to [-1, rr] and map to [0.3, 0.5]
+    pnl_r = max(-1.0, min(float(rr), pnl_r))
+    timeout_label = 0.30 + 0.20 * (pnl_r + 1.0) / (float(rr) + 1.0)
+    return round(timeout_label, 4)
 
 
 def _make_stacked_model():
@@ -1205,6 +1219,34 @@ def save_results(results_2025, results_2026, best_2025, best_2026):
             lines.append(f"{rank:>3} {cfg:<50} {r['sc_trades']:>4} {r['sc_wr']:>7.1f}% "
                          f"{r['comb_wr']:>7.1f}% {r['max_dd']:>6.1f}% {r['profit_pct']:>14,.1f}%")
 
+    # Copy-paste ready Python config block for terminator_v3b_live.py
+    best = best_2026 if best_2026 else best_2025
+    if best:
+        lines.append('\n' + '=' * 80)
+        lines.append('COPY-PASTE CONFIG FOR terminator_v3b_live.py')
+        lines.append('=' * 80)
+        lines.append('# ===== V3B FIXED (do NOT change) =====')
+        lines.append(f'ML_THRESHOLD  = {V3B_ML_TH}')
+        lines.append(f'SL_MULTIPLIER = {V3B_SL_MULT}')
+        lines.append(f'RR            = {V3B_RR}')
+        lines.append(f'BASE_RISK     = {V3B_RISK}')
+        lines.append(f'COOLDOWN_BARS = {V3B_COOL}')
+        lines.append('')
+        lines.append('# ===== SCALPER (from sweep best result) =====')
+        lines.append(f'SC_THRESHOLD  = {best.get("sc_th", "N/A")}')
+        lines.append(f'SC_RR         = {best.get("sc_rr", "N/A")}')
+        lines.append(f'SC_RISK       = {best.get("sc_risk", "N/A")}')
+        lines.append(f'SC_ADAPTIVE   = {best.get("adaptive_th", "N/A")}')
+        lines.append(f'SC_MODEL_SET  = "{best.get("model_set", "N/A")}"')
+        lines.append('')
+        lines.append('# ===== BACKTEST PERFORMANCE (best config) =====')
+        lines.append(f'# V3B trades : {best.get("v3b_trades","?")} | WR: {best.get("v3b_wr","?")}%')
+        lines.append(f'# SC  trades : {best.get("sc_trades","?")}  | WR: {best.get("sc_wr","?")}%')
+        lines.append(f'# Combined WR: {best.get("comb_wr","?")}%')
+        lines.append(f'# Max DD     : {best.get("max_dd","?")}%')
+        lines.append(f'# Profit     : +{best.get("profit_pct","?")}%')
+        lines.append(f'# SC Models  : {best.get("sc_model_breakdown",{})}')
+
     with open(OUT_TXT, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines))
     print(f'\n[SAVE] Results -> {OUT_TXT}')
@@ -1220,7 +1262,14 @@ def save_results(results_2025, results_2026, best_2025, best_2026):
             'rr': V3B_RR,
             'base_risk': V3B_RISK,
             'cooldown_bars': V3B_COOL,
-        }
+        },
+        'scalper_config': {
+            'sc_threshold': best.get('sc_th') if best else None,
+            'sc_rr':        best.get('sc_rr') if best else None,
+            'sc_risk':      best.get('sc_risk') if best else None,
+            'sc_adaptive':  best.get('adaptive_th') if best else None,
+            'sc_model_set': best.get('model_set') if best else None,
+        } if best else {}
     }
     with open(OUT_JSON, 'w', encoding='utf-8') as f:
         json.dump(cfg, f, indent=2, default=str)
