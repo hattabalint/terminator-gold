@@ -1,0 +1,60 @@
+{
+  "version": "v5",
+  "generated": "2026-03-13T21:57:45.014544",
+  "best_2025": {
+    "label": "2025_RR2.0_RISK1pct_TH0.5_ADC1_SETtrend_range",
+    "sc_th": 0.5,
+    "sc_rr": 2.0,
+    "sc_risk": 0.01,
+    "adaptive_th": true,
+    "model_set": "trend_range",
+    "total_trades": 121,
+    "v3b_trades": 82,
+    "sc_trades": 39,
+    "v3b_wr": 35.37,
+    "sc_wr": 41.03,
+    "comb_wr": 37.19,
+    "max_dd": 29.1,
+    "profit_pct": 133.46,
+    "final_balance": 2334.63,
+    "scorer": 37.8365,
+    "sc_model_breakdown": {
+      "TrendScalper": 39
+    }
+  },
+  "best_2026": {
+    "label": "2026_RR2.0_RISK2pct_TH0.5_ADC1_SETtrend_range",
+    "sc_th": 0.5,
+    "sc_rr": 2.0,
+    "sc_risk": 0.02,
+    "adaptive_th": true,
+    "model_set": "trend_range",
+    "total_trades": 41,
+    "v3b_trades": 16,
+    "sc_trades": 25,
+    "v3b_wr": 43.75,
+    "sc_wr": 52.0,
+    "comb_wr": 48.78,
+    "max_dd": 11.47,
+    "profit_pct": 69.67,
+    "final_balance": 1696.67,
+    "scorer": 48.0605,
+    "sc_model_breakdown": {
+      "TrendScalper": 25
+    }
+  },
+  "v3b_config": {
+    "ml_threshold": 0.455,
+    "sl_multiplier": 0.8,
+    "rr": 3.0,
+    "base_risk": 0.03,
+    "cooldown_bars": 1
+  },
+  "scalper_config": {
+    "sc_threshold": 0.5,
+    "sc_rr": 2.0,
+    "sc_risk": 0.02,
+    "sc_adaptive": true,
+    "sc_model_set": "trend_range"
+  }
+}

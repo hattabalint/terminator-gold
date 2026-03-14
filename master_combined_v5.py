@@ -420,7 +420,8 @@ def train_v3b(train_df: pd.DataFrame):
     h3  = hmm.GaussianHMM(n_components=3, covariance_type='full', n_iter=100, random_state=42)
     h3.fit(ret[:5000])
     states3 = h3.predict(ret)
-    df['regime3'] = pd.Series([np.nan] + list(states3), index=df.index).fillna(0)
+    regime3_arr = np.concatenate([[0], states3])[:len(df)]
+    df['regime3'] = regime3_arr
     means3 = [ret[states3==i].mean() for i in range(3)]
     trending_s3 = int(np.argmax([abs(m) for m in means3]))
     ranging_s3  = int(np.argmin([abs(m) for m in means3]))
@@ -800,9 +801,7 @@ def precompute_backtest_features(test_df, v3b_rf, v3b_gb, v3b_scaler, v3b_h3,
     ret3 = df['c'].pct_change().fillna(0).values.reshape(-1, 1)
     try:
         s3 = v3b_h3.predict(ret3)
-        series = pd.Series([0] + list(s3)).head(len(df))
-        series.index = df.index
-        df['regime3'] = series.fillna(0)
+        df['regime3'] = np.concatenate([[0], s3])[:len(df)]
     except:
         df['regime3'] = 0
     df['is_trending'] = (df['regime3'] == v3b_trending_s3).astype(int)
@@ -888,9 +887,7 @@ def run_backtest(test_df, v3b_rf, v3b_gb, v3b_scaler, v3b_h3, v3b_trending_s3, v
         ret3 = df['c'].pct_change().fillna(0).values.reshape(-1, 1)
         try:
             s3 = v3b_h3.predict(ret3)
-            series = pd.Series([0] + list(s3)).head(len(df))
-            series.index = df.index
-            df['regime3'] = series.fillna(0)
+            df['regime3'] = np.concatenate([[0], s3])[:len(df)]
         except:
             df['regime3'] = 0
         df['is_trending'] = (df['regime3'] == v3b_trending_s3).astype(int)
@@ -1131,6 +1128,30 @@ def run_backtest(test_df, v3b_rf, v3b_gb, v3b_scaler, v3b_h3, v3b_trending_s3, v
         'sc_model_breakdown': sc_model_counts,
         'monthly':        monthly,
     }
+
+
+# ===================================================================
+# SECTION 6: SANITY CHECKS
+# ===================================================================
+
+def sanity_check(result, label=''):
+    ok   = True
+    msgs = []
+    if result['v3b_wr'] < 49.0:
+        msgs.append(f"WARNING V3B WR {result['v3b_wr']:.1f}% < 49%")
+    if result['v3b_trades'] < 150:
+        msgs.append(f"WARNING V3B only {result['v3b_trades']} trades")
+    if result['sc_trades'] > 200:
+        msgs.append(f"WARNING SC {result['sc_trades']} trades > 200 – threshold too low")
+    if result['max_dd'] > 30.0:
+        msgs.append(f"ERROR MaxDD {result['max_dd']:.1f}% > 30%")
+        ok = False
+    status = 'PASS' if ok else 'FAIL'
+    print(f"  [SANITY {status}] {label} | V3B:{result['v3b_trades']}T {result['v3b_wr']:.1f}%WR "
+          f"| SC:{result['sc_trades']}T {result['sc_wr']:.1f}%WR | MaxDD:{result['max_dd']:.1f}%")
+    for m in msgs:
+        print(f'    >> {m}')
+    return ok
 
 
 # ===================================================================

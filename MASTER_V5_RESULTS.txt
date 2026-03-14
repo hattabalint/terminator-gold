@@ -1,0 +1,75 @@
+================================================================================
+MASTER COMBINED BACKTEST V5 – RESULTS
+Generated: 2026-03-13 21:57:45
+================================================================================
+
+PERIOD: 2025 Full Year
+  # Config                                               SC    SCWR     CWR     DD         Profit
+  1 2025_RR2.0_RISK1pct_TH0.5_ADC1_SETtrend_range        39    41.0%    37.2%   29.1%          133.5%
+  2 2025_RR3.0_RISK1pct_TH0.5_ADC1_SETall5               49    30.6%    33.9%   26.1%          141.6%
+  3 2025_RR3.0_RISK1pct_TH0.5_ADC1_SETtrend_range        38    39.5%    36.7%   29.1%          152.7%
+  4 2025_RR2.0_RISK1pct_TH0.5_ADC1_SETtrend_range        39    41.0%    37.2%   29.8%          147.2%
+  5 2025_RR3.0_RISK1pct_TH0.5_ADC1_SETall5               49    30.6%    33.9%   26.5%          155.8%
+  6 2025_RR3.0_RISK1pct_TH0.5_ADC1_SETtrend_range        38    39.5%    36.7%   30.2%          177.8%
+  7 2025_RR2.0_RISK1pct_TH0.5_ADC1_SETmom_burst_only      0     0.0%    33.3%   27.0%           95.5%
+  8 2025_RR2.0_RISK1pct_TH0.5_ADC0_SETall5                0     0.0%    33.3%   27.0%           95.5%
+  9 2025_RR2.0_RISK1pct_TH0.5_ADC0_SETtrend_range         0     0.0%    33.3%   27.0%           95.5%
+ 10 2025_RR2.0_RISK1pct_TH0.5_ADC0_SETrange_fake_div      0     0.0%    33.3%   27.0%           95.5%
+ 11 2025_RR2.0_RISK1pct_TH0.5_ADC0_SETmom_burst_only      0     0.0%    33.3%   27.0%           95.5%
+ 12 2025_RR2.0_RISK1pct_TH0.5_ADC1_SETmom_burst_only      0     0.0%    33.3%   27.0%           95.5%
+ 13 2025_RR2.0_RISK1pct_TH0.5_ADC0_SETall5                0     0.0%    33.3%   27.0%           95.5%
+ 14 2025_RR2.0_RISK1pct_TH0.5_ADC0_SETtrend_range         0     0.0%    33.3%   27.0%           95.5%
+ 15 2025_RR2.0_RISK1pct_TH0.5_ADC0_SETrange_fake_div      0     0.0%    33.3%   27.0%           95.5%
+ 16 2025_RR2.0_RISK1pct_TH0.5_ADC0_SETmom_burst_only      0     0.0%    33.3%   27.0%           95.5%
+ 17 2025_RR2.0_RISK2pct_TH0.5_ADC1_SETmom_burst_only      0     0.0%    33.3%   27.0%           95.5%
+ 18 2025_RR2.0_RISK2pct_TH0.5_ADC0_SETall5                0     0.0%    33.3%   27.0%           95.5%
+ 19 2025_RR2.0_RISK2pct_TH0.5_ADC0_SETtrend_range         0     0.0%    33.3%   27.0%           95.5%
+ 20 2025_RR2.0_RISK2pct_TH0.5_ADC0_SETrange_fake_div      0     0.0%    33.3%   27.0%           95.5%
+
+PERIOD: 2026 YTD
+  # Config                                               SC    SCWR     CWR     DD         Profit
+  1 2026_RR2.0_RISK2pct_TH0.5_ADC1_SETtrend_range        25    52.0%    48.8%   11.5%           69.7%
+  2 2026_RR2.0_RISK1pct_TH0.5_ADC1_SETtrend_range        25    52.0%    48.8%   11.5%           62.0%
+  3 2026_RR2.0_RISK1pct_TH0.5_ADC1_SETtrend_range        25    52.0%    48.8%   11.5%           53.1%
+  4 2026_RR2.0_RISK2pct_TH0.5_ADC1_SETall5               15    53.3%    45.5%   11.5%           48.2%
+  5 2026_RR2.0_RISK1pct_TH0.5_ADC1_SETall5               15    53.3%    45.5%   11.7%           42.3%
+  6 2026_RR3.0_RISK2pct_TH0.5_ADC1_SETtrend_range        24    45.8%    45.0%   11.5%           79.1%
+  7 2026_RR3.0_RISK1pct_TH0.5_ADC1_SETtrend_range        24    45.8%    45.0%   11.5%           71.4%
+  8 2026_RR3.0_RISK1pct_TH0.5_ADC1_SETtrend_range        24    45.8%    45.0%   11.5%           59.0%
+  9 2026_RR5.0_RISK2pct_TH0.52_ADC1_SETtrend_range       10    50.0%    44.4%   11.5%           64.5%
+ 10 2026_RR5.0_RISK1pct_TH0.52_ADC1_SETtrend_range       10    50.0%    44.4%   11.5%           55.5%
+ 11 2026_RR3.0_RISK2pct_TH0.52_ADC1_SETtrend_range       10    50.0%    44.4%   11.5%           48.5%
+ 12 2026_RR5.0_RISK1pct_TH0.52_ADC1_SETtrend_range       10    50.0%    44.4%   11.5%           47.3%
+ 13 2026_RR3.0_RISK1pct_TH0.52_ADC1_SETtrend_range       10    50.0%    44.4%   11.5%           43.5%
+ 14 2026_RR2.0_RISK2pct_TH0.52_ADC1_SETtrend_range       10    50.0%    44.4%   11.5%           40.6%
+ 15 2026_RR3.0_RISK1pct_TH0.52_ADC1_SETtrend_range       10    50.0%    44.4%   11.5%           39.7%
+ 16 2026_RR2.0_RISK1pct_TH0.52_ADC1_SETtrend_range       10    50.0%    44.4%   11.5%           36.0%
+ 17 2026_RR2.0_RISK1pct_TH0.52_ADC1_SETtrend_range       10    50.0%    44.4%   11.5%           37.9%
+ 18 2026_RR2.0_RISK1pct_TH0.5_ADC1_SETall5               15    53.3%    45.5%   12.7%           37.6%
+ 19 2026_RR3.0_RISK2pct_TH0.5_ADC1_SETall5               14    50.0%    43.8%   11.5%           56.8%
+ 20 2026_RR3.0_RISK1pct_TH0.5_ADC1_SETall5               14    50.0%    43.8%   11.5%           48.6%
+
+================================================================================
+COPY-PASTE CONFIG FOR terminator_v3b_live.py
+================================================================================
+# ===== V3B FIXED (do NOT change) =====
+ML_THRESHOLD  = 0.455
+SL_MULTIPLIER = 0.8
+RR            = 3.0
+BASE_RISK     = 0.03
+COOLDOWN_BARS = 1
+
+# ===== SCALPER (from sweep best result) =====
+SC_THRESHOLD  = 0.5
+SC_RR         = 2.0
+SC_RISK       = 0.02
+SC_ADAPTIVE   = True
+SC_MODEL_SET  = "trend_range"
+
+# ===== BACKTEST PERFORMANCE (best config) =====
+# V3B trades : 16 | WR: 43.75%
+# SC  trades : 25  | WR: 52.0%
+# Combined WR: 48.78%
+# Max DD     : 11.47%
+# Profit     : +69.67%
+# SC Models  : {'TrendScalper': 25}
