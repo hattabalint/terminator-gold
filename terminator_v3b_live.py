@@ -269,8 +269,8 @@ class AsterDexClient:
     """AsterDex Futures API Client (Binance-compatible)"""
 
     def __init__(self, api_key: str, secret_key: str, base_url: str):
-        self.api_key = api_key
-        self.secret_key = secret_key
+        self.api_key = api_key.strip() if api_key else ''
+        self.secret_key = secret_key.strip() if secret_key else ''
         self.base_url = base_url
 
     def _sign(self, params: dict) -> str:
@@ -288,8 +288,19 @@ class AsterDexClient:
         if params is None:
             params = {}
         if signed:
-            params['timestamp'] = int(time.time() * 1000)
-            params['recvWindow'] = 5000
+            # Always use server time for perfect sync
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(f"{self.base_url}/fapi/v1/time", timeout=aiohttp.ClientTimeout(total=3)) as resp:
+                        if resp.status == 200:
+                            server_time = await resp.json()
+                            params['timestamp'] = server_time['serverTime']
+                        else:
+                            params['timestamp'] = int(time.time() * 1000)
+            except:
+                params['timestamp'] = int(time.time() * 1000)
+            
+            params['recvWindow'] = 10000
             params['signature'] = self._sign(params)
         async with aiohttp.ClientSession() as session:
             try:
@@ -304,6 +315,13 @@ class AsterDexClient:
                         return await resp.json(content_type=None)
             except Exception as e:
                 logger.error(f"AsterDex API error [{method} {endpoint}]: {e}")
+                # Log signature details for debugging
+                if signed and 'signature' in str(e):
+                    logger.error(f"Signature debug - Timestamp: {params.get('timestamp')}")
+                    logger.error(f"Signature debug - RecvWindow: {params.get('recvWindow')}")
+                    logger.error(f"Signature debug - Query: {urlencode(sorted(params.items()))}")
+                    logger.error(f"Signature debug - API Key length: {len(self.api_key)}")
+                    logger.error(f"Signature debug - Secret Key length: {len(self.secret_key)}")
                 return {}
 
     async def get_account_balance(self) -> float:
