@@ -16,7 +16,11 @@ SCALPER V6 CONFIG (1M-VERIFIED OPTIMAL):
   - SC Threshold: 0.42 (adaptive), SC RR: 1:6, SC Risk: 3%
   - SC SL: 0.8x ATR (tighter stops)
   - Trailing Stop: lock +1R profit at +2R
-  - SC fires ONLY when V3B does NOT fire
+
+MODE D: PARALLEL TRADING
+  - V3B and SC can be open simultaneously
+  - SC fires only when V3B does NOT fire on same bar
+  - Independent position tracking, SL/TP, and cooldowns
 
 1M-Verified Backtest (2026 Jan-Mar, 108k 1m candles):
   - V3B: 55T / 47.3% WR / $8,261
@@ -113,6 +117,9 @@ class Config:
     SC_SL_MULT = 0.8          # SL = 0.8 x ATR (tighter, 1m-verified)
     SC_ENABLED = True
 
+    # ===== MODE D: PARALLEL TRADING =====
+    PARALLEL_MODE = True        # Both V3B and SC can be open simultaneously
+
     # Costs
     SLIPPAGE = 0.60
 
@@ -203,9 +210,10 @@ class TelegramBot:
         )
         await self.send_message(message)
 
-    async def send_tp_hit(self, entry: float, exit_price: float, pnl: float, balance: float):
+    async def send_tp_hit(self, entry: float, exit_price: float, pnl: float, balance: float, trade_type: str = 'V3B'):
+        label = '⚡ SCALPER' if trade_type == 'SC' else '🥇 V3B'
         message = (
-            f"✅ *TP HIT!* ✅\n"
+            f"✅ *{label} TP HIT!* ✅\n"
             f"━━━━━━━━━━━━━━━━\n"
             f"💰 Entry: ${entry:.2f} → Exit: ${exit_price:.2f}\n"
             f"📈 Profit: *+${pnl:.2f}*\n"
@@ -213,9 +221,10 @@ class TelegramBot:
         )
         await self.send_message(message)
 
-    async def send_sl_hit(self, entry: float, exit_price: float, pnl: float, balance: float):
+    async def send_sl_hit(self, entry: float, exit_price: float, pnl: float, balance: float, trade_type: str = 'V3B'):
+        label = '⚡ SCALPER' if trade_type == 'SC' else '🥇 V3B'
         message = (
-            f"🛑 *SL HIT* 🛑\n"
+            f"🛑 *{label} SL HIT* 🛑\n"
             f"━━━━━━━━━━━━━━━━\n"
             f"💰 Entry: ${entry:.2f} → Exit: ${exit_price:.2f}\n"
             f"📉 Loss: *${pnl:.2f}*\n"
@@ -274,20 +283,20 @@ class AsterDexClient:
         self.secret_key = secret_key.strip() if secret_key else ''
         self.base_url = base_url
 
-    def _sign(self, params: dict) -> str:
-        query_string = urlencode(sorted(params.items()))
-        signature = hmac_lib.new(
+    def _sign(self, query_string: str) -> str:
+        """Create HMAC SHA256 signature for the given query string"""
+        return hmac_lib.new(
             self.secret_key.encode('utf-8'),
             query_string.encode('utf-8'),
             hashlib.sha256
         ).hexdigest()
-        return signature
 
     async def _request(self, method: str, endpoint: str, params: dict = None, signed: bool = False) -> dict:
         url = f"{self.base_url}{endpoint}"
         headers = {"X-MBX-APIKEY": self.api_key}
         if params is None:
             params = {}
+        send_params = params
         if signed:
             # Always use server time for perfect sync
             try:
@@ -300,29 +309,26 @@ class AsterDexClient:
                             params['timestamp'] = int(time.time() * 1000)
             except:
                 params['timestamp'] = int(time.time() * 1000)
-            
+
             params['recvWindow'] = 10000
-            params['signature'] = self._sign(params)
+            # Build query string manually so signed string == sent string
+            query_string = urlencode(params)
+            signature = self._sign(query_string)
+            url = f"{url}?{query_string}&signature={signature}"
+            send_params = None  # params already in URL
         async with aiohttp.ClientSession() as session:
             try:
                 if method == "GET":
-                    async with session.get(url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    async with session.get(url, params=send_params, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                         return await resp.json(content_type=None)
                 elif method == "POST":
-                    async with session.post(url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    async with session.post(url, params=send_params, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                         return await resp.json(content_type=None)
                 elif method == "DELETE":
-                    async with session.delete(url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    async with session.delete(url, params=send_params, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                         return await resp.json(content_type=None)
             except Exception as e:
                 logger.error(f"AsterDex API error [{method} {endpoint}]: {e}")
-                # Log signature details for debugging
-                if signed and 'signature' in str(e):
-                    logger.error(f"Signature debug - Timestamp: {params.get('timestamp')}")
-                    logger.error(f"Signature debug - RecvWindow: {params.get('recvWindow')}")
-                    logger.error(f"Signature debug - Query: {urlencode(sorted(params.items()))}")
-                    logger.error(f"Signature debug - API Key length: {len(self.api_key)}")
-                    logger.error(f"Signature debug - Secret Key length: {len(self.secret_key)}")
                 return {}
 
     async def get_account_balance(self) -> float:
@@ -378,13 +384,30 @@ class AsterDexClient:
                 }, signed=True)
                 logger.info(f"Closed position: {amt} {symbol}")
 
+    async def cancel_order(self, symbol: str, order_id) -> dict:
+        """Cancel a specific order by ID"""
+        return await self._request("DELETE", "/fapi/v1/order", {
+            "symbol": symbol, "orderId": order_id
+        }, signed=True)
+
+    async def close_quantity(self, symbol: str, direction: str, quantity: float):
+        """Close a specific quantity (not the whole position)"""
+        close_side = "SELL" if direction == "LONG" else "BUY"
+        result = await self._request("POST", "/fapi/v1/order", {
+            "symbol": symbol, "side": close_side,
+            "type": "MARKET", "quantity": quantity, "reduceOnly": "true"
+        }, signed=True)
+        logger.info(f"Close quantity result: {result}")
+        return result
+
     async def place_market_order_with_sl_tp(
         self, symbol: str, direction: str, quantity: float,
         sl_price: float, tp_price: float
-    ) -> bool:
-        """Place market order + SL + TP orders"""
+    ) -> Optional[dict]:
+        """Place market order + SL + TP orders. Returns order IDs dict or None on failure."""
         side = "BUY" if direction == "LONG" else "SELL"
         close_side = "SELL" if direction == "LONG" else "BUY"
+        order_ids = {'entry': None, 'sl': None, 'tp': None}
 
         # 1. Market entry
         entry_result = await self._request("POST", "/fapi/v1/order", {
@@ -395,29 +418,34 @@ class AsterDexClient:
 
         if 'orderId' not in entry_result and 'code' in entry_result:
             logger.error(f"Entry order failed: {entry_result}")
-            return False
+            return None
+        order_ids['entry'] = entry_result.get('orderId')
 
         await asyncio.sleep(0.5)
 
-        # 2. Stop Loss
+        # 2. Stop Loss (quantity-based, not closePosition)
         sl_result = await self._request("POST", "/fapi/v1/order", {
             "symbol": symbol, "side": close_side,
             "type": "STOP_MARKET",
             "stopPrice": f"{sl_price:.2f}",
-            "closePosition": "true"
+            "quantity": str(quantity),
+            "reduceOnly": "true"
         }, signed=True)
         logger.info(f"SL order result: {sl_result}")
+        order_ids['sl'] = sl_result.get('orderId')
 
-        # 3. Take Profit
+        # 3. Take Profit (quantity-based, not closePosition)
         tp_result = await self._request("POST", "/fapi/v1/order", {
             "symbol": symbol, "side": close_side,
             "type": "TAKE_PROFIT_MARKET",
             "stopPrice": f"{tp_price:.2f}",
-            "closePosition": "true"
+            "quantity": str(quantity),
+            "reduceOnly": "true"
         }, signed=True)
         logger.info(f"TP order result: {tp_result}")
+        order_ids['tp'] = tp_result.get('orderId')
 
-        return True
+        return order_ids
 
 
 # ==================== NEWS FILTER ====================
@@ -1320,8 +1348,11 @@ class V3BTradingEngine:
 
         self.balance = config.STARTING_BALANCE
         self.peak_balance = config.STARTING_BALANCE
-        self.current_position = None
-        self.last_exit_bar = -100
+        # Mode D: separate position slots for V3B and SC
+        self.v3b_position = None
+        self.sc_position = None
+        self.last_v3b_exit_bar = -100
+        self.last_sc_exit_bar = -100
         self.bar_count = 0
         self.running = False
 
@@ -1391,7 +1422,9 @@ class V3BTradingEngine:
         quantity = risk_amt / sl_dist
         return round(quantity, 3)
 
-    async def check_for_signal(self) -> Optional[Dict]:
+    async def check_for_signals(self, need_v3b: bool = True, need_sc: bool = True) -> list:
+        """Check for V3B and/or SC signals. Returns list of signal dicts (Mode D: up to 2)."""
+        signals = []
         try:
             # Market hours check (UTC)
             now = datetime.utcnow()
@@ -1404,18 +1437,21 @@ class V3BTradingEngine:
             )
             if is_market_closed:
                 logger.info("Market closed - skipping signal check")
-                return None
+                return signals
 
-            # Cooldown check
-            if self.bar_count <= self.last_exit_bar + self.config.COOLDOWN_BARS:
-                logger.info(f"Cooldown active (bar {self.bar_count} <= {self.last_exit_bar + self.config.COOLDOWN_BARS})")
-                return None
+            # Per-type cooldown check
+            if need_v3b and self.bar_count <= self.last_v3b_exit_bar + self.config.COOLDOWN_BARS:
+                logger.info(f"V3B cooldown active (bar {self.bar_count} <= {self.last_v3b_exit_bar + self.config.COOLDOWN_BARS})")
+                need_v3b = False
+
+            if not need_v3b and not need_sc:
+                return signals
 
             # News check
             is_blackout, event = await self.news_filter.is_news_blackout()
             if is_blackout:
                 logger.info(f"News blackout: {event}")
-                return None
+                return signals
 
             # Load OHLC data
             base_csv = os.path.join(os.path.dirname(__file__), 'xauusd_1h_2025_spot.csv')
@@ -1431,7 +1467,7 @@ class V3BTradingEngine:
                     df_base.columns = ['ts', 'o', 'h', 'l', 'c']
                 except Exception:
                     logger.error("Could not load SPOT OHLC data")
-                    return None
+                    return signals
 
             if os.path.exists(new_csv):
                 df_new = pd.read_csv(new_csv, parse_dates=['datetime'])
@@ -1445,7 +1481,7 @@ class V3BTradingEngine:
 
             if len(df) < 100:
                 logger.warning("Not enough OHLC data")
-                return None
+                return signals
 
             df = self.model.calculate_indicators(df)
 
@@ -1470,26 +1506,28 @@ class V3BTradingEngine:
             features, direction = self.model.get_27_features(df, i)
             if features is None:
                 logger.info("Feature extraction failed for latest candle")
-                return None
+                return signals
 
             ml_prob = self.model.predict(features)
             atr = df['atr'].iloc[i]
 
-            # Verbose log for Render
+            v3b_pos_str = "V3B_OPEN" if self.v3b_position else "V3B_EMPTY"
+            sc_pos_str = "SC_OPEN" if self.sc_position else "SC_EMPTY"
             logger.info(
                 f"[SIGNAL CHECK] Bar={self.bar_count} | Dir={direction} | "
                 f"ML={ml_prob:.4f} ({ml_prob:.1%}) | Threshold={self.config.ML_THRESHOLD} | "
                 f"ATR={atr:.2f} | EMA21={df['ema21'].iloc[i]:.2f} | EMA50={df['ema50'].iloc[i]:.2f} | "
-                f"RSI={df['rsi'].iloc[i]:.1f} | "
-                f"{'>>> V3B SIGNAL!' if ml_prob >= self.config.ML_THRESHOLD else 'no V3B signal'}"
+                f"RSI={df['rsi'].iloc[i]:.1f} | {v3b_pos_str} | {sc_pos_str} | "
+                f"{'>>> V3B SIGNAL!' if need_v3b and ml_prob >= self.config.ML_THRESHOLD else 'no V3B signal'}"
             )
 
             # ---- V3B signal fires ----
-            if ml_prob >= self.config.ML_THRESHOLD:
+            v3b_fired = False
+            if need_v3b and ml_prob >= self.config.ML_THRESHOLD:
                 spot_price = await self.price_fetcher.get_spot_price()
                 if spot_price is None:
                     logger.error("Could not get SPOT price")
-                    return None
+                    return signals
 
                 asterdex_price = spot_price
                 if self.asterdex:
@@ -1514,7 +1552,7 @@ class V3BTradingEngine:
                     sl = entry + sl_dist
                     tp = entry - sl_dist * self.config.RR
 
-                return {
+                signals.append({
                     'type': 'V3B',
                     'direction': direction,
                     'ml_confidence': ml_prob,
@@ -1525,10 +1563,11 @@ class V3BTradingEngine:
                     'sl_dist': sl_dist,
                     'spot_price': spot_price,
                     'asterdex_price': asterdex_price,
-                }
+                })
+                v3b_fired = True
 
-            # ---- SC signal check (only when V3B does NOT fire) ----
-            if self.scalper and self.scalper.trained:
+            # ---- SC signal check (only when V3B does NOT fire on this bar) ----
+            if need_sc and not v3b_fired and self.scalper and self.scalper.trained:
                 sc_direction = 'LONG' if df['ema21'].iloc[i] > df['ema50'].iloc[i] else 'SHORT'
                 atr_rank_val = df['atr_rank'].iloc[i] if 'atr_rank' in df.columns else 0.5
                 eff_th = self.scalper.get_adaptive_th(atr_rank_val)
@@ -1546,7 +1585,7 @@ class V3BTradingEngine:
                     spot_price = await self.price_fetcher.get_spot_price()
                     if spot_price is None:
                         logger.error("Could not get SPOT price for SC trade")
-                        return None
+                        return signals
 
                     asterdex_price = spot_price
                     if self.asterdex:
@@ -1564,7 +1603,7 @@ class V3BTradingEngine:
                         sl = entry + sc_sl_dist
                         tp = entry - sc_sl_dist * self.config.SC_RR
 
-                    return {
+                    signals.append({
                         'type': 'SC',
                         'direction': sc_direction,
                         'ml_confidence': sc_prob,
@@ -1576,13 +1615,13 @@ class V3BTradingEngine:
                         'sl_dist': sc_sl_dist,
                         'spot_price': spot_price,
                         'asterdex_price': asterdex_price,
-                    }
+                    })
 
-            return None
+            return signals
 
         except Exception as e:
             logger.error(f"Signal check error: {e}")
-            return None
+            return signals
 
     async def open_position(self, signal: Dict):
         trade_type = signal.get('type', 'V3B')
@@ -1602,21 +1641,23 @@ class V3BTradingEngine:
         )
 
         # Execute on AsterDex
+        order_ids = None
+        quantity = 0.0
         if self.asterdex and not self.config.PAPER_TRADING:
             try:
                 quantity = self._calc_quantity(signal['asterdex_price'], risk_amt, signal['sl_dist'])
                 if quantity > 0:
-                    success = await self.asterdex.place_market_order_with_sl_tp(
+                    order_ids = await self.asterdex.place_market_order_with_sl_tp(
                         symbol=self.config.ASTERDEX_SYMBOL,
                         direction=signal['direction'],
                         quantity=quantity,
                         sl_price=signal['sl'],
                         tp_price=signal['tp']
                     )
-                    if not success:
+                    if order_ids is None:
                         logger.error("AsterDex order placement failed")
                         return
-                    logger.info(f"AsterDex order placed: {signal['direction']} {quantity} {self.config.ASTERDEX_SYMBOL}")
+                    logger.info(f"AsterDex order placed: {signal['direction']} {quantity} {self.config.ASTERDEX_SYMBOL} | IDs={order_ids}")
                 else:
                     logger.error("Quantity calculation returned 0, skipping order")
                     return
@@ -1624,7 +1665,7 @@ class V3BTradingEngine:
                 logger.error(f"AsterDex order error: {e}")
                 return
 
-        self.current_position = {
+        position = {
             'type': trade_type,
             'direction': signal['direction'],
             'entry': signal['entry'],
@@ -1641,7 +1682,16 @@ class V3BTradingEngine:
             'be_done': False,
             'original_sl': signal['sl'],
             'model_name': signal.get('model_name', ''),
+            # AsterDex order tracking (Mode D)
+            'order_ids': order_ids,
+            'quantity': quantity,
         }
+
+        # Store in correct slot (Mode D)
+        if trade_type == 'V3B':
+            self.v3b_position = position
+        else:
+            self.sc_position = position
 
         # Send appropriate telegram notification
         if trade_type == 'SC':
@@ -1670,21 +1720,55 @@ class V3BTradingEngine:
                 asterdex_price=signal['asterdex_price'],
             )
 
-    async def monitor_position(self):
-        if not self.current_position:
+    async def _cancel_position_orders(self, pos: dict):
+        """Cancel only this position's SL/TP orders on AsterDex (Mode D safe)"""
+        if not self.asterdex or self.config.PAPER_TRADING:
             return
+        order_ids = pos.get('order_ids') or {}
+        for key in ['sl', 'tp']:
+            oid = order_ids.get(key)
+            if oid:
+                try:
+                    await self.asterdex.cancel_order(self.config.ASTERDEX_SYMBOL, oid)
+                except Exception as e:
+                    logger.warning(f"Could not cancel {key} order {oid}: {e}")
 
-        spot_price = await self.price_fetcher.get_spot_price()
-        current_price = spot_price
-        if self.asterdex:
-            ad_price = await self.asterdex.get_asterdex_price()
-            if ad_price:
-                current_price = ad_price
-
-        if current_price is None:
+    async def _update_sc_trailing_orders(self, pos: dict, new_sl: float):
+        """Update SC trailing stop SL/TP on AsterDex (per-position, Mode D safe)"""
+        if not self.asterdex or self.config.PAPER_TRADING:
             return
+        try:
+            close_side = "SELL" if pos['direction'] == "LONG" else "BUY"
+            qty = str(pos.get('quantity', 0))
+            # Cancel old SL/TP for this position
+            await self._cancel_position_orders(pos)
+            # New SL
+            sl_result = await self.asterdex._request("POST", "/fapi/v1/order", {
+                "symbol": self.config.ASTERDEX_SYMBOL,
+                "side": close_side,
+                "type": "STOP_MARKET",
+                "stopPrice": f"{new_sl:.2f}",
+                "quantity": qty,
+                "reduceOnly": "true"
+            }, signed=True)
+            new_oids = {'sl': sl_result.get('orderId'), 'tp': None}
+            # Re-place TP
+            tp_result = await self.asterdex._request("POST", "/fapi/v1/order", {
+                "symbol": self.config.ASTERDEX_SYMBOL,
+                "side": close_side,
+                "type": "TAKE_PROFIT_MARKET",
+                "stopPrice": f"{pos['tp']:.2f}",
+                "quantity": qty,
+                "reduceOnly": "true"
+            }, signed=True)
+            new_oids['tp'] = tp_result.get('orderId')
+            pos['order_ids'] = new_oids
+            logger.info("[SC TRAILING] AsterDex SL/TP orders updated (per-position)")
+        except Exception as e:
+            logger.error(f"[SC TRAILING] AsterDex update error: {e}")
 
-        pos = self.current_position
+    async def _monitor_single_position(self, pos: dict, current_price: float) -> bool:
+        """Monitor a single position. Returns True if position was closed."""
         is_long = pos['direction'] == 'LONG'
         trade_type = pos.get('type', 'V3B')
 
@@ -1699,31 +1783,7 @@ class V3BTradingEngine:
                 pos['be_done'] = True
                 self.sc_stats['trailing_locks'] += 1
                 logger.info(f"[SC TRAILING] LONG +2R reached! SL moved to +1R: ${new_sl:.2f}")
-
-                # Update SL on AsterDex
-                if self.asterdex and not self.config.PAPER_TRADING:
-                    try:
-                        await self.asterdex.cancel_all_orders(self.config.ASTERDEX_SYMBOL)
-                        close_side = "SELL"
-                        await self.asterdex._request("POST", "/fapi/v1/order", {
-                            "symbol": self.config.ASTERDEX_SYMBOL,
-                            "side": close_side,
-                            "type": "STOP_MARKET",
-                            "stopPrice": f"{new_sl:.2f}",
-                            "closePosition": "true"
-                        }, signed=True)
-                        # Re-place TP
-                        await self.asterdex._request("POST", "/fapi/v1/order", {
-                            "symbol": self.config.ASTERDEX_SYMBOL,
-                            "side": close_side,
-                            "type": "TAKE_PROFIT_MARKET",
-                            "stopPrice": f"{pos['tp']:.2f}",
-                            "closePosition": "true"
-                        }, signed=True)
-                        logger.info("[SC TRAILING] AsterDex SL/TP orders updated")
-                    except Exception as e:
-                        logger.error(f"[SC TRAILING] AsterDex update error: {e}")
-
+                await self._update_sc_trailing_orders(pos, new_sl)
                 await self.telegram.send_sc_trailing_lock(pos['direction'], pos['entry'], new_sl)
 
             elif not is_long and current_price <= trigger_price_short:
@@ -1732,29 +1792,7 @@ class V3BTradingEngine:
                 pos['be_done'] = True
                 self.sc_stats['trailing_locks'] += 1
                 logger.info(f"[SC TRAILING] SHORT +2R reached! SL moved to +1R: ${new_sl:.2f}")
-
-                if self.asterdex and not self.config.PAPER_TRADING:
-                    try:
-                        await self.asterdex.cancel_all_orders(self.config.ASTERDEX_SYMBOL)
-                        close_side = "BUY"
-                        await self.asterdex._request("POST", "/fapi/v1/order", {
-                            "symbol": self.config.ASTERDEX_SYMBOL,
-                            "side": close_side,
-                            "type": "STOP_MARKET",
-                            "stopPrice": f"{new_sl:.2f}",
-                            "closePosition": "true"
-                        }, signed=True)
-                        await self.asterdex._request("POST", "/fapi/v1/order", {
-                            "symbol": self.config.ASTERDEX_SYMBOL,
-                            "side": close_side,
-                            "type": "TAKE_PROFIT_MARKET",
-                            "stopPrice": f"{pos['tp']:.2f}",
-                            "closePosition": "true"
-                        }, signed=True)
-                        logger.info("[SC TRAILING] AsterDex SL/TP orders updated")
-                    except Exception as e:
-                        logger.error(f"[SC TRAILING] AsterDex update error: {e}")
-
+                await self._update_sc_trailing_orders(pos, new_sl)
                 await self.telegram.send_sc_trailing_lock(pos['direction'], pos['entry'], new_sl)
 
         # ---- Check exit conditions ----
@@ -1762,67 +1800,95 @@ class V3BTradingEngine:
         tp_hit = (is_long and current_price >= pos['tp']) or (not is_long and current_price <= pos['tp'])
         bars_held = self.bar_count - pos['entry_bar']
 
-        # Different max_hold for V3B vs SC
-        if trade_type == 'SC':
-            max_hold = self.config.SC_MAX_HOLD
-        else:
-            max_hold = self.config.MAX_HOLD_BARS
+        max_hold = self.config.SC_MAX_HOLD if trade_type == 'SC' else self.config.MAX_HOLD_BARS
         timeout = bars_held >= max_hold
 
-        if tp_hit or sl_hit or timeout:
-            if self.asterdex and not self.config.PAPER_TRADING:
-                try:
-                    await self.asterdex.cancel_all_orders(self.config.ASTERDEX_SYMBOL)
-                    if timeout:
-                        await self.asterdex.close_position(self.config.ASTERDEX_SYMBOL)
-                except Exception as e:
-                    logger.error(f"AsterDex close error: {e}")
+        if not (tp_hit or sl_hit or timeout):
+            return False
 
-            if tp_hit:
-                # PnL based on actual RR for the trade type
-                if trade_type == 'SC':
-                    pnl = pos['risk_amt'] * self.config.SC_RR
-                else:
-                    pnl = pos['risk_amt'] * self.config.RR
+        # ---- Position exit ----
+        if self.asterdex and not self.config.PAPER_TRADING:
+            try:
+                await self._cancel_position_orders(pos)
+                if timeout:
+                    qty = pos.get('quantity', 0)
+                    if qty > 0:
+                        await self.asterdex.close_quantity(
+                            self.config.ASTERDEX_SYMBOL, pos['direction'], qty)
+            except Exception as e:
+                logger.error(f"AsterDex close error: {e}")
+
+        if tp_hit:
+            if trade_type == 'SC':
+                pnl = pos['risk_amt'] * self.config.SC_RR
+            else:
+                pnl = pos['risk_amt'] * self.config.RR
+            self.balance += pnl
+            if self.balance > self.peak_balance:
+                self.peak_balance = self.balance
+            await self.telegram.send_tp_hit(pos['entry'], pos['tp'], pnl, self.balance, trade_type)
+            logger.info(f"[{trade_type}] TP HIT! +${pnl:.2f} | Balance=${self.balance:.2f}")
+            if trade_type == 'SC':
+                self.sc_stats['wins'] += 1
+        elif sl_hit:
+            if trade_type == 'SC' and pos.get('be_done', False):
+                pnl = pos['risk_amt'] * self.config.SC_TRAILING_LOCK
                 self.balance += pnl
                 if self.balance > self.peak_balance:
                     self.peak_balance = self.balance
-                await self.telegram.send_tp_hit(pos['entry'], pos['tp'], pnl, self.balance)
-                logger.info(f"[{trade_type}] TP HIT! +${pnl:.2f} | Balance=${self.balance:.2f}")
-                if trade_type == 'SC':
-                    self.sc_stats['wins'] += 1
-            elif sl_hit:
-                # If SC trade with BE done, the SL is at +1R (profit!)
-                if trade_type == 'SC' and pos.get('be_done', False):
-                    pnl = pos['risk_amt'] * self.config.SC_TRAILING_LOCK  # +1R
-                    self.balance += pnl
-                    if self.balance > self.peak_balance:
-                        self.peak_balance = self.balance
-                    await self.telegram.send_sc_be_exit(pos['entry'], pos['sl'], pnl, self.balance)
-                    logger.info(f"[SC] TRAILING STOP HIT! +${pnl:.2f} (locked +1R) | Balance=${self.balance:.2f}")
-                    self.sc_stats['wins'] += 1
-                else:
-                    pnl = -pos['risk_amt']
-                    self.balance += pnl
-                    await self.telegram.send_sl_hit(pos['entry'], pos['sl'], pnl, self.balance)
-                    logger.info(f"[{trade_type}] SL HIT! ${pnl:.2f} | Balance=${self.balance:.2f}")
-            elif timeout:
-                if is_long:
-                    pnl = (current_price - pos['entry']) / pos['sl_dist'] * pos['risk_amt']
-                else:
-                    pnl = (pos['entry'] - current_price) / pos['sl_dist'] * pos['risk_amt']
+                await self.telegram.send_sc_be_exit(pos['entry'], pos['sl'], pnl, self.balance)
+                logger.info(f"[SC] TRAILING STOP HIT! +${pnl:.2f} (locked +1R) | Balance=${self.balance:.2f}")
+                self.sc_stats['wins'] += 1
+            else:
+                pnl = -pos['risk_amt']
                 self.balance += pnl
-                if self.balance > self.peak_balance:
-                    self.peak_balance = self.balance
-                logger.info(f"[{trade_type}] TIMEOUT exit! PnL=${pnl:.2f} | Balance=${self.balance:.2f}")
-                await self.telegram.send_message(
-                    f"⏰ *{trade_type} TIMEOUT* - Position closed\nPnL: ${pnl:.2f}\nBalance: ${self.balance:.2f}"
-                )
-                if trade_type == 'SC' and pnl > 0:
-                    self.sc_stats['wins'] += 1
+                await self.telegram.send_sl_hit(pos['entry'], pos['sl'], pnl, self.balance, trade_type)
+                logger.info(f"[{trade_type}] SL HIT! ${pnl:.2f} | Balance=${self.balance:.2f}")
+        elif timeout:
+            if is_long:
+                pnl = (current_price - pos['entry']) / pos['sl_dist'] * pos['risk_amt']
+            else:
+                pnl = (pos['entry'] - current_price) / pos['sl_dist'] * pos['risk_amt']
+            self.balance += pnl
+            if self.balance > self.peak_balance:
+                self.peak_balance = self.balance
+            logger.info(f"[{trade_type}] TIMEOUT exit! PnL=${pnl:.2f} | Balance=${self.balance:.2f}")
+            await self.telegram.send_message(
+                f"⏰ *{trade_type} TIMEOUT* - Position closed\nPnL: ${pnl:.2f}\nBalance: ${self.balance:.2f}"
+            )
+            if trade_type == 'SC' and pnl > 0:
+                self.sc_stats['wins'] += 1
 
-            self.current_position = None
-            self.last_exit_bar = self.bar_count
+        return True
+
+    async def monitor_positions(self):
+        """Monitor both V3B and SC positions independently (Mode D)"""
+        if not self.v3b_position and not self.sc_position:
+            return
+
+        spot_price = await self.price_fetcher.get_spot_price()
+        current_price = spot_price
+        if self.asterdex:
+            ad_price = await self.asterdex.get_asterdex_price()
+            if ad_price:
+                current_price = ad_price
+
+        if current_price is None:
+            return
+
+        # Monitor V3B position
+        if self.v3b_position:
+            closed = await self._monitor_single_position(self.v3b_position, current_price)
+            if closed:
+                self.v3b_position = None
+                self.last_v3b_exit_bar = self.bar_count
+
+        # Monitor SC position
+        if self.sc_position:
+            closed = await self._monitor_single_position(self.sc_position, current_price)
+            if closed:
+                self.sc_position = None
+                self.last_sc_exit_bar = self.bar_count
 
     async def check_retrain(self):
         if self.model.last_train is None:
@@ -1847,17 +1913,23 @@ class V3BTradingEngine:
                 if current_hour != self._last_hour:
                     self.bar_count += 1
                     self._last_hour = current_hour
+                    v3b_str = f"V3B={'OPEN' if self.v3b_position else 'EMPTY'}"
+                    sc_str = f"SC={'OPEN' if self.sc_position else 'EMPTY'}"
                     logger.info(f"New bar #{self.bar_count} | Balance=${self.balance:.2f} | "
-                                f"DD={max(0, (self.peak_balance - self.balance) / self.peak_balance * 100):.1f}%")
+                                f"DD={max(0, (self.peak_balance - self.balance) / self.peak_balance * 100):.1f}% | "
+                                f"{v3b_str} | {sc_str}")
 
                 await self.candle_collector.update()
-                await self.monitor_position()
+                await self.monitor_positions()
 
-                if not self.current_position:
+                # Mode D: check for signals if either slot is empty
+                need_v3b = self.v3b_position is None
+                need_sc = self.sc_position is None
+                if need_v3b or need_sc:
                     current_minute = datetime.now().minute
                     if current_minute <= self.config.SIGNAL_WINDOW_MINUTES:
-                        signal = await self.check_for_signal()
-                        if signal:
+                        signals = await self.check_for_signals(need_v3b, need_sc)
+                        for signal in signals:
                             await self.open_position(signal)
 
                 await self.check_retrain()
