@@ -8,19 +8,20 @@ V3B CONFIG (UNCHANGED):
   - SL: ATR × 0.80, RR: 3.0
   - Ensemble: RandomForest + GradientBoosting
 
-SCALPER V6 CONFIG:
+SCALPER V6 CONFIG (1M-VERIFIED OPTIMAL):
   - 41 Features (BB, ADX, RSI div, price_accel, vol_squeeze, etc.)
-  - 5 Models: TrendScalper, RangeScalper, FakeBreak, MomBurst, DivHunter
+  - Active Models: MomBurst + DivHunter (mom_burst_only)
   - HMM 5-State regime detection
   - Stacked Ensemble: RF + GB + LGB + XGB -> LR meta
-  - SC Threshold: 0.42 (adaptive), SC RR: 1:5, SC Risk: 2%
+  - SC Threshold: 0.42 (adaptive), SC RR: 1:6, SC Risk: 3%
+  - SC SL: 0.8x ATR (tighter stops)
   - Trailing Stop: lock +1R profit at +2R
   - SC fires ONLY when V3B does NOT fire
 
-Backtest Results (2025):
-  - V3B: 184T / 56.5% WR
-  - SC:  111T / 50.5% WR / RR=1:5
-  - Combined: 295T / 54.2% WR / +188,847% Profit
+1M-Verified Backtest (2026 Jan-Mar, 108k 1m candles):
+  - V3B: 55T / 47.3% WR / $8,261
+  - SC:  67T / 53.7% WR / RR=1:6 / $8,898
+  - Combined: 122T / 1716% return / 19.2% max DD
 
 Exchange: AsterDex (XAUUSDT Futures)
 Author: TradeVersum
@@ -99,17 +100,17 @@ class Config:
     RISK_DD_THRESHOLD_1 = 10   # If DD > 10%: risk = 2.25%
     RISK_DD_THRESHOLD_2 = 20   # If DD > 20%: risk = 1.5%
 
-    # ===== SCALPER V6 SETTINGS =====
+    # ===== SCALPER V6 SETTINGS (1M-VERIFIED OPTIMAL) =====
     SC_THRESHOLD = 0.42
-    SC_RR = 5.0
-    SC_RISK = 0.02          # 2% risk per SC trade
+    SC_RR = 6.0              # 1:6 RR (1m-verified: 53.7% WR, $8898 profit)
+    SC_RISK = 0.03           # 3% risk per SC trade
     SC_ADAPTIVE_TH = True
-    SC_MODEL_SET = 'trend_range'
+    SC_MODEL_SET = 'mom_burst_only'  # MomBurst + DivHunter (best combo)
     SC_LABEL_RR = 2.0       # Training label RR (best AUC)
     SC_MAX_HOLD = 48         # min(RR*12, 48)
     SC_TRAILING_TRIGGER = 2.0  # Lock trailing at +2R
     SC_TRAILING_LOCK = 1.0     # SL moves to +1R profit
-    SC_SL_MULT = 1.0          # SL = 1.0 x ATR for SC trades
+    SC_SL_MULT = 0.8          # SL = 0.8 x ATR (tighter, 1m-verified)
     SC_ENABLED = True
 
     # Costs
@@ -437,7 +438,16 @@ class NewsFilter:
                         self.high_impact_events = []
                         for event in data:
                             if event.get('impact') == 'High' and event.get('country') == 'USD':
-                                event_time = datetime.strptime(event['date'], '%Y-%m-%dT%H:%M:%S%z')
+                                try:
+                                    event_time = datetime.strptime(event['date'], '%Y-%m-%dT%H:%M:%S%z')
+                                except (ValueError, TypeError):
+                                    try:
+                                        event_time = datetime.strptime(event['date'][:19], '%Y-%m-%dT%H:%M:%S')
+                                    except (ValueError, TypeError):
+                                        try:
+                                            event_time = datetime.strptime(event['date'][:10], '%Y-%m-%d')
+                                        except (ValueError, TypeError):
+                                            continue
                                 self.high_impact_events.append({
                                     'title': event.get('title', 'Unknown'),
                                     'time': event_time,
