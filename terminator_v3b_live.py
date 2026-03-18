@@ -1194,8 +1194,10 @@ class ScalperModel:
         return clf, scaler
 
     async def train(self, v3b_model: V3BModel):
-        """Train all 5 scalper models. Uses V3B's indicator data + scalper extras."""
-        logger.info("[SCALPER V6] Training scalper models...")
+        """Train scalper models based on SC_MODEL_SET config."""
+        model_set = self.config.SC_MODEL_SET
+        active_models = ACTIVE_SC_MODELS.get(model_set, ['MomBurst', 'DivHunter'])
+        logger.info(f"[SCALPER V6] Training models: {active_models} (set={model_set})")
         try:
             # Load training data (same source as V3B)
             base_csv = os.path.join(os.path.dirname(__file__), 'xauusd_1h_2020_2025_spot.csv')
@@ -1228,33 +1230,34 @@ class ScalperModel:
             df = df.iloc[250:].reset_index(drop=True)
             label_rr = self.config.SC_LABEL_RR
 
-            logger.info(f"[SCALPER V6] Training 5 models with label_rr={label_rr}")
+            logger.info(f"[SCALPER V6] Training {len(active_models)} models with label_rr={label_rr}")
 
-            # 1. TrendScalper
-            df_t = df.copy()
-            df_t['_use'] = df_t['hmm_label'].isin(['TREND_UP', 'TREND_DOWN']).astype(int)
-            m, s = self._train_one_model(df_t, '_use', label_rr, 'TrendScalper')
-            self.models['TrendScalper'] = (m, s)
+            # Train only active models
+            if 'TrendScalper' in active_models:
+                df_t = df.copy()
+                df_t['_use'] = df_t['hmm_label'].isin(['TREND_UP', 'TREND_DOWN']).astype(int)
+                m, s = self._train_one_model(df_t, '_use', label_rr, 'TrendScalper')
+                self.models['TrendScalper'] = (m, s)
 
-            # 2. RangeScalper
-            df_r = df.copy()
-            df_r['_use'] = (df_r['hmm_label'] == 'RANGE_TIGHT').astype(int)
-            m, s = self._train_one_model(df_r, '_use', label_rr, 'RangeScalper')
-            self.models['RangeScalper'] = (m, s)
+            if 'RangeScalper' in active_models:
+                df_r = df.copy()
+                df_r['_use'] = (df_r['hmm_label'] == 'RANGE_TIGHT').astype(int)
+                m, s = self._train_one_model(df_r, '_use', label_rr, 'RangeScalper')
+                self.models['RangeScalper'] = (m, s)
 
-            # 3. FakeBreak
-            df_f = df.copy()
-            df_f['_use'] = df_f['hmm_label'].isin(['RANGE_WIDE', 'RANGE_TIGHT']).astype(int)
-            m, s = self._train_one_model(df_f, '_use', label_rr, 'FakeBreak')
-            self.models['FakeBreak'] = (m, s)
+            if 'FakeBreak' in active_models:
+                df_f = df.copy()
+                df_f['_use'] = df_f['hmm_label'].isin(['RANGE_WIDE', 'RANGE_TIGHT']).astype(int)
+                m, s = self._train_one_model(df_f, '_use', label_rr, 'FakeBreak')
+                self.models['FakeBreak'] = (m, s)
 
-            # 4. MomBurst
-            m, s = self._train_one_model(df, None, label_rr, 'MomBurst')
-            self.models['MomBurst'] = (m, s)
+            if 'MomBurst' in active_models:
+                m, s = self._train_one_model(df, None, label_rr, 'MomBurst')
+                self.models['MomBurst'] = (m, s)
 
-            # 5. DivHunter
-            m, s = self._train_one_model(df, None, label_rr, 'DivHunter')
-            self.models['DivHunter'] = (m, s)
+            if 'DivHunter' in active_models:
+                m, s = self._train_one_model(df, None, label_rr, 'DivHunter')
+                self.models['DivHunter'] = (m, s)
 
             trained = [k for k, v in self.models.items() if v[0] is not None]
             logger.info(f"[SCALPER V6] Trained models: {trained}")
