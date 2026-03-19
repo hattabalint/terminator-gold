@@ -728,20 +728,23 @@ class V3BModel:
             # Load base training data
             base_csv = os.path.join(os.path.dirname(__file__), 'xauusd_1h_2020_2025_spot.csv')
             if os.path.exists(base_csv):
-                df_base = pd.read_csv(base_csv, parse_dates=['datetime'])
+                df_base = pd.read_csv(base_csv)
                 df_base.columns = ['ts', 'o', 'h', 'l', 'c']
+                df_base['ts'] = pd.to_datetime(df_base['ts'], format='mixed')
                 logger.info(f"Loaded base data: {len(df_base)} candles")
             else:
                 csv_url = "https://raw.githubusercontent.com/hattabalint/terminator-gold/main/xauusd_1h_2020_2025_spot.csv"
                 logger.warning("Local CSV not found, trying GitHub...")
-                df_base = pd.read_csv(csv_url, parse_dates=['datetime'])
+                df_base = pd.read_csv(csv_url)
                 df_base.columns = ['ts', 'o', 'h', 'l', 'c']
+                df_base['ts'] = pd.to_datetime(df_base['ts'], format='mixed')
 
             # Add 2026 candles if available
             new_csv = os.path.join(os.path.dirname(__file__), 'new_candles_2026.csv')
             if os.path.exists(new_csv):
-                df_new = pd.read_csv(new_csv, parse_dates=['datetime'])
+                df_new = pd.read_csv(new_csv)
                 df_new.columns = ['ts', 'o', 'h', 'l', 'c']
+                df_new['ts'] = pd.to_datetime(df_new['ts'], format='mixed')
                 df = pd.concat([df_base, df_new], ignore_index=True)
                 df = df.drop_duplicates(subset=['ts']).reset_index(drop=True)
                 logger.info(f"Combined training data: {len(df)} candles (with 2026)")
@@ -1202,17 +1205,20 @@ class ScalperModel:
             # Load training data (same source as V3B)
             base_csv = os.path.join(os.path.dirname(__file__), 'xauusd_1h_2020_2025_spot.csv')
             if os.path.exists(base_csv):
-                df_base = pd.read_csv(base_csv, parse_dates=['datetime'])
+                df_base = pd.read_csv(base_csv)
                 df_base.columns = ['ts', 'o', 'h', 'l', 'c']
+                df_base['ts'] = pd.to_datetime(df_base['ts'], format='mixed')
             else:
                 csv_url = "https://raw.githubusercontent.com/hattabalint/terminator-gold/main/xauusd_1h_2020_2025_spot.csv"
-                df_base = pd.read_csv(csv_url, parse_dates=['datetime'])
+                df_base = pd.read_csv(csv_url)
                 df_base.columns = ['ts', 'o', 'h', 'l', 'c']
+                df_base['ts'] = pd.to_datetime(df_base['ts'], format='mixed')
 
             new_csv = os.path.join(os.path.dirname(__file__), 'new_candles_2026.csv')
             if os.path.exists(new_csv):
-                df_new = pd.read_csv(new_csv, parse_dates=['datetime'])
+                df_new = pd.read_csv(new_csv)
                 df_new.columns = ['ts', 'o', 'h', 'l', 'c']
+                df_new['ts'] = pd.to_datetime(df_new['ts'], format='mixed')
                 df = pd.concat([df_base, df_new], ignore_index=True)
                 df = df.drop_duplicates(subset=['ts']).reset_index(drop=True)
             else:
@@ -1461,20 +1467,23 @@ class V3BTradingEngine:
             new_csv = os.path.join(os.path.dirname(__file__), 'new_candles_2026.csv')
 
             if os.path.exists(base_csv):
-                df_base = pd.read_csv(base_csv, parse_dates=['datetime'])
+                df_base = pd.read_csv(base_csv)
                 df_base.columns = ['ts', 'o', 'h', 'l', 'c']
+                df_base['ts'] = pd.to_datetime(df_base['ts'], format='mixed')
             else:
                 csv_url = "https://raw.githubusercontent.com/hattabalint/terminator-gold/main/xauusd_1h_2025_spot.csv"
                 try:
-                    df_base = pd.read_csv(csv_url, parse_dates=['datetime'])
+                    df_base = pd.read_csv(csv_url)
                     df_base.columns = ['ts', 'o', 'h', 'l', 'c']
+                    df_base['ts'] = pd.to_datetime(df_base['ts'], format='mixed')
                 except Exception:
                     logger.error("Could not load SPOT OHLC data")
                     return signals
 
             if os.path.exists(new_csv):
-                df_new = pd.read_csv(new_csv, parse_dates=['datetime'])
+                df_new = pd.read_csv(new_csv)
                 df_new.columns = ['ts', 'o', 'h', 'l', 'c']
+                df_new['ts'] = pd.to_datetime(df_new['ts'], format='mixed')
                 df = pd.concat([df_base, df_new], ignore_index=True)
                 df = df.drop_duplicates(subset=['ts']).reset_index(drop=True)
             else:
